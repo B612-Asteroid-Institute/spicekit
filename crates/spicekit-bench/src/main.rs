@@ -11,9 +11,20 @@
 //! Build/run locally (Linux — CSpice auto-downloads via cspice-sys):
 //!     cargo run --release -p spicekit-bench
 //!
-//! On platforms where cspice-sys's `downloadcspice` feature fails
-//! (notably Apple Silicon — upstream bindgen mis-detects the target),
-//! the bench is still compile-checkable without the cspice feature:
+//! Apple Silicon: cspice-sys 1.0.4's `downloadcspice` feature checks
+//! `target_arch = "arm"` and fetches the x86_64 archive, so the
+//! default feature set fails to link. Point `CSPICE_DIR` at an arm64
+//! CSpice archive (e.g. adam-core's `vendor/cspice/`) and it skips the
+//! download:
+//!     CSPICE_DIR=/path/to/cspice \
+//!       SPICEKIT_BENCH_KERNEL_LEAPSECONDS=... \
+//!       ... (5 more SPICEKIT_BENCH_KERNEL_* env vars) \
+//!       cargo run --release --bin spicekit-bench
+//!
+//! The env vars can also be omitted — the kernel resolver falls back
+//! to `python3 -c "from naif_de440 import de440; print(de440)"` (and
+//! the other five `naif-*` packages) as long as a venv with those
+//! packages is active. Fully compile-checkable without CSpice at all:
 //!     cargo check -p spicekit-bench --no-default-features
 
 #[cfg(not(feature = "cspice"))]

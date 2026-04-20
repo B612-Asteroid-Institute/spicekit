@@ -44,13 +44,15 @@ fn resolve(env_key: &str, module: &str, attr: &str) -> PathBuf {
         return pb;
     }
 
-    let out = Command::new("python")
+    let script = format!("from {module} import {attr}; print({attr})");
+    let out = Command::new("python3")
         .arg("-c")
-        .arg(format!("from {module} import {attr}; print({attr})"))
+        .arg(&script)
         .output()
+        .or_else(|_| Command::new("python").arg("-c").arg(&script).output())
         .unwrap_or_else(|e| {
             panic!(
-                "failed to spawn `python -c` to resolve {module}.{attr}: {e}. \
+                "failed to spawn `python3 -c` / `python -c` to resolve {module}.{attr}: {e}. \
                  Either `uv pip install {module}` first, or set the env var \
                  {env_var} to the kernel path directly."
             )
