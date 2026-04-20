@@ -1,0 +1,87 @@
+name: bench + parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  spicekit-vs-cspice:
+    # Ubuntu only: cspice-sys's `downloadcspice` feature misdetects the
+    # target on Apple Silicon and fails to build; the bench skeleton
+    # compiles cleanly on every platform with `--no-default-features`,
+    # but the side-by-side comparison is meaningful only where CSpice
+    # itself builds.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+
+      - name: Install Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install NAIF kernel packages
+        # Each `naif-*` package vendors a single kernel and exports a
+        # single absolute-path string; we resolve them via env vars in
+        # the next step so tests don't spawn a Python subprocess per
+        # kernel.
+        run: |
+          uv pip install --system \
+            naif-leapseconds \
+            naif-de440 \
+            naif-eop-predict \
+            naif-eop-historical \
+            naif-eop-high-prec \
+            naif-earth-itrf93
+
+      - name: Resolve kernel paths
+        id: kernels
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          from naif_leapseconds import leapseconds
+          from naif_de440 import de440
+          from naif_eop_predict import eop_predict
+          from naif_eop_historical import eop_historical
+          from naif_eop_high_prec import eop_high_prec
+          from naif_earth_itrf93 import earth_itrf93
+          print(f"SPICEKIT_BENCH_KERNEL_LEAPSECONDS={leapseconds}")
+          print(f"SPICEKIT_BENCH_KERNEL_DE440={de440}")
+          print(f"SPICEKIT_BENCH_KERNEL_EOP_PREDICT={eop_predict}")
+          print(f"SPICEKIT_BENCH_KERNEL_EOP_HISTORICAL={eop_historical}")
+          print(f"SPICEKIT_BENCH_KERNEL_EOP_HIGH_PREC={eop_high_prec}")
+          print(f"SPICEKIT_BENCH_KERNEL_EARTH_ITRF93={earth_itrf93}")
+          PY
+
+      - name: Build bench crate (with CSpice)
+        # First build ensures cspice-sys's `downloadcspice` finishes
+        # before any `cargo test` / `cargo run` tries to link.
+        run: cargo build --release -p spicekit-bench
+
+      - name: Run parity tests (spicekit vs CSpice)
+        run: cargo test --release -p spicekit-bench
+
+      - name: Run side-by-side benchmark
+        run: |
+          cargo run --release --bin spicekit-bench \
+            | tee bench_results.md
+
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spicekit-bench-results
+          path: bench_results.md
+          if-no-files-found: warn

@@ -1,0 +1,26 @@
+[package]
+name = "spicekit-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Side-by-side microbenchmarks and parity tests comparing spicekit to the CSpice reference toolkit. Not published to crates.io."
+publish = false
+
+[lib]
+name = "spicekit_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "spicekit-bench"
+path = "src/main.rs"
+
+[features]
+default = ["cspice"]
+cspice = ["dep:cspice-sys"]
+
+[dependencies]
+spicekit = { path = "../spicekit" }
+cspice-sys = { version = "1.0.4", features = ["downloadcspice"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
