@@ -3,8 +3,17 @@ name: bench + parity
 on:
   push:
     branches: [main]
+    # Skip when the workflow itself just committed BENCHMARKS.md, so we
+    # don't loop. The commit-back step below writes ONLY this file.
+    paths-ignore:
+      - "BENCHMARKS.md"
   pull_request:
   workflow_dispatch:
+
+permissions:
+  # Needed for the commit-back-to-main and PR-comment steps below.
+  contents: write
+  pull-requests: write
 
 jobs:
   spicekit-vs-cspice:
@@ -74,14 +83,54 @@ jobs:
         run: cargo test --release -p spicekit-bench
 
       - name: Run side-by-side benchmark
+        run: cargo run --release --bin spicekit-bench | tee bench_raw.md
+
+      - name: Render BENCHMARKS.md
+        # Wrap the raw table in a header block so the committed file
+        # carries provenance (commit SHA, runner, date).
         run: |
-          cargo run --release --bin spicekit-bench \
-            | tee bench_results.md
+          {
+            echo "# Benchmark results"
+            echo
+            echo "spicekit vs CSpice, side-by-side on matched inputs."
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Runner: \`${RUNNER_OS}\` (\`$(uname -m)\`)"
+            echo "- Generated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            echo "- Source: \`cargo run --release --bin spicekit-bench\`"
+            echo
+            echo "Speedup = cspice / spicekit (higher is better for spicekit)."
+            echo
+            cat bench_raw.md
+          } > BENCHMARKS.md
 
       - name: Upload bench results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: spicekit-bench-results
-          path: bench_results.md
+          path: BENCHMARKS.md
           if-no-files-found: warn
+
+      - name: Commit BENCHMARKS.md to main
+        # Only runs on push-to-main. Uses the default GITHUB_TOKEN, which
+        # `permissions: contents: write` above grants. `[skip ci]` plus
+        # the `paths-ignore` filter prevent a re-trigger loop.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          if git diff --quiet -- BENCHMARKS.md; then
+            echo "BENCHMARKS.md unchanged — skipping commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BENCHMARKS.md
+          git commit -m "ci: update BENCHMARKS.md [skip ci]"
+          git push origin HEAD:main
+
+      - name: Post/update sticky PR comment
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: spicekit-bench
+          path: BENCHMARKS.md
