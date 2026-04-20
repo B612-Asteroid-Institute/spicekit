@@ -118,13 +118,16 @@ jobs:
         # the `paths-ignore` filter prevent a re-trigger loop.
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          if git diff --quiet -- BENCHMARKS.md; then
-            echo "BENCHMARKS.md unchanged — skipping commit."
-            exit 0
-          fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add BENCHMARKS.md
+          # After staging, check if anything actually changed vs HEAD.
+          # `git diff --quiet --cached` catches both edits AND new-file
+          # cases; a plain `git diff` misses untracked new files.
+          if git diff --quiet --cached -- BENCHMARKS.md; then
+            echo "BENCHMARKS.md unchanged — skipping commit."
+            exit 0
+          fi
           git commit -m "ci: update BENCHMARKS.md [skip ci]"
           git push origin HEAD:main
 
