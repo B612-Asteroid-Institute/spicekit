@@ -1,0 +1,30 @@
+Third-Party Attributions
+========================
+
+src/naif_builtin_table.rs
+-------------------------
+
+The data in this file (the 692-entry built-in body-name ↔ NAIF ID map)
+was extracted from NASA's CSpice toolkit — specifically from the NPERM
+table in `zzidmap.c`. CSpice is distributed by the Navigation and
+Ancillary Information Facility (NAIF) at the Jet Propulsion Laboratory,
+California Institute of Technology.
+
+The NAIF toolkit is distributed without restriction; NAIF asks only for
+attribution when the toolkit or derived artifacts are redistributed.
+The canonical distribution statement (from the NAIF toolkit's
+distribution-terms documentation) is:
+
+    Copyright (C) [year], California Institute of Technology.
+    U.S. Government sponsorship acknowledged.
+
+spicekit acknowledges NAIF as the source of the body-name ↔ ID data
+embedded in `naif_builtin_table.rs`. Users who rely on that data in
+redistributed work should verify the current NAIF distribution-terms
+document, available with any CSpice toolkit release, for any updated
+requirements.
+
+spicekit is not a port of CSpice. All executable logic in this crate is
+an independent implementation written from the NAIF SPK / PCK / DAF file
+format specifications (which are published separately from the toolkit,
+in the NAIF "required reading" documents).
