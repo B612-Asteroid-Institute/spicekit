@@ -1,0 +1,22 @@
+[package]
+name = "spicekit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Pure-Rust reader for NASA/NAIF SPICE kernel formats (DAF, SPK, PCK, text kernels). Independent of the CSpice toolkit."
+readme = "../../README.md"
+keywords = ["spice", "naif", "astronomy", "ephemeris", "astrodynamics"]
+categories = ["science", "aerospace", "parser-implementations"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+memmap2 = "0.9"
+rayon = "1.11"
+thiserror = "2.0"
+
+[dev-dependencies]
+tempfile = "3"
