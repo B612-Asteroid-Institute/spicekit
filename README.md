@@ -1,11 +1,36 @@
 # spicekit
 
+[![crates.io](https://img.shields.io/crates/v/spicekit.svg)](https://crates.io/crates/spicekit)
+[![docs.rs](https://docs.rs/spicekit/badge.svg)](https://docs.rs/spicekit)
+[![PyPI](https://img.shields.io/pypi/v/spicekit.svg)](https://pypi.org/project/spicekit/)
+[![CI](https://github.com/B612-Asteroid-Institute/spicekit/actions/workflows/ci.yml/badge.svg)](https://github.com/B612-Asteroid-Institute/spicekit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
 spicekit is an independent, pure-Rust reader for the SPICE kernel formats
 (DAF containers, SPK ephemeris files, binary PCK rotation files, and the
 text-kernel subset used for body-name bindings). It is **not affiliated
 with or endorsed by NAIF/JPL, and it is not a port of the CSpice
-toolkit** — it is a from-scratch reimplementation that reads NAIF-format
-files without linking any C code.
+toolkit** — all executable logic is an independent implementation
+written from the published NAIF file-format specifications, with no
+CSpice linkage and no translated CSpice source. The only CSpice-derived
+artifact shipped in this crate is the 692-entry body-name table in
+`src/naif_builtin_table.rs`, which is reproduced under NAIF's
+distribution terms (see [`LICENSE-NOTICES`](./LICENSE-NOTICES)).
+
+## Install
+
+### Rust
+
+```toml
+[dependencies]
+spicekit = "0.1"
+```
+
+### Python
+
+```bash
+pip install spicekit
+```
 
 ## Scope
 
@@ -28,13 +53,35 @@ dynamics library, which is the project it was originally extracted from:
 ## Non-goals
 
 - No async I/O — sync memory-mapped reads only.
-- No CSpice linkage and no FFI. Correctness is verified in the parent
-  project's test suite by comparing against CSpice output at
+- No CSpice linkage and no FFI in the base crate. CSpice parity is
+  verified in the sibling `spicekit-bench` crate, which links `cspice-sys`
+  behind a feature flag and compares every code path against CSpice at
   machine-epsilon tolerance.
-- No Python bindings ship in this crate. (adam-core exposes spicekit to
-  Python via its own PyO3 layer.)
 - No CLI tool.
 - Read-only for PCK in v0.1.
+
+## Python bindings
+
+Python bindings are provided by the `spicekit-py` crate in this
+workspace (shipped to PyPI as the `spicekit` package). Build and install
+with [maturin](https://github.com/PyO3/maturin):
+
+```bash
+maturin develop --release --manifest-path crates/spicekit-py/Cargo.toml
+```
+
+Then:
+
+```python
+import spicekit
+spk = spicekit.NaifSpk("/path/to/de440.bsp")
+```
+
+## Parity testing
+
+`spicekit-bench` keeps an FFI-based CSpice reference installation and
+asserts that every spicekit numeric path bit-matches CSpice at a
+science-grade tolerance.
 
 See each module's rustdoc for details.
 
@@ -48,12 +95,12 @@ NAIF toolkit is distributed by the Jet Propulsion Laboratory under terms
 that permit redistribution with attribution — see `LICENSE-NOTICES` for
 the full attribution and the relevant NAIF distribution-terms excerpt.
 
-## Parity testing
+## Test layers
 
 spicekit's own test suite verifies internal correctness (DAF round-trip,
 Chebyshev polynomial exactness on coefficient tables, Lagrange exactness
 at knot points, text-kernel parser tolerance of LSK/SCLK content, etc.).
 CSpice-parity testing — confirming that spicekit's numeric output
-bit-matches CSpice at a science-grade tolerance — lives in the adam-core
-repository, which keeps an FFI-based CSpice reference installation for
-precisely this purpose.
+bit-matches CSpice at a science-grade tolerance — lives in
+`crates/spicekit-bench`, which links the CSpice toolkit and asserts
+parity on every code path.
