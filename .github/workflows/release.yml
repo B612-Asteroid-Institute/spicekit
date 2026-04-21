@@ -55,7 +55,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --out dist --manifest-path crates/spicekit-py/Cargo.toml
+          args: --release --out dist --manifest-path crates/spicekit-py/Cargo.toml -i python${{ matrix.python-version }}
           manylinux: auto
 
       - uses: actions/upload-artifact@v4
