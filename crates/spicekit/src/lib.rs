@@ -21,7 +21,7 @@ pub use frame::{rotate_state, NaifFrame, OBLIQUITY_J2000_RAD};
 pub use naif_ids::{bodc2n, bodn2c, NaifIdError};
 pub use pck::{PckError, PckFile, PckSegment};
 pub use spk::{SpkError, SpkFile, SpkSegment};
-pub use spk_writer::{
-    SpkWriter, SpkWriterError, Type3Record, Type3Segment, Type9Segment,
+pub use spk_writer::{SpkWriter, SpkWriterError, Type3Record, Type3Segment, Type9Segment};
+pub use text_kernel::{
+    parse_body_bindings, parse_body_bindings_from_str, BodyBinding, TextKernelError,
 };
-pub use text_kernel::{parse_body_bindings, parse_body_bindings_from_str, BodyBinding, TextKernelError};

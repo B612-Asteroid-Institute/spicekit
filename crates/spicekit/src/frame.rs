@@ -13,7 +13,7 @@
 //!   `sxform("J2000","ITRF93",et)` given the same PCK data CSPICE
 //!   would see.
 
-pub const OBLIQUITY_J2000_RAD: f64 = 0.409_092_804_222_328_965_125;
+pub const OBLIQUITY_J2000_RAD: f64 = 0.409_092_804_222_328_97;
 
 /// NAIF frame identifiers we natively support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,12 +127,12 @@ pub fn sxform_from_rotation(r: &[[f64; 3]; 3], dr: &[[f64; 3]; 3]) -> [[f64; 6];
 /// to a 6-vector state.
 pub fn apply_sxform(m: &[[f64; 6]; 6], state: &[f64; 6]) -> [f64; 6] {
     let mut out = [0.0f64; 6];
-    for i in 0..6 {
+    for (i, out_i) in out.iter_mut().enumerate() {
         let mut acc = 0.0;
-        for j in 0..6 {
-            acc += m[i][j] * state[j];
+        for (j, &s) in state.iter().enumerate() {
+            acc += m[i][j] * s;
         }
-        out[i] = acc;
+        *out_i = acc;
     }
     out
 }
@@ -190,8 +190,8 @@ fn matmul3(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     for i in 0..3 {
         for j in 0..3 {
             let mut acc = 0.0;
-            for k in 0..3 {
-                acc += a[i][k] * b[k][j];
+            for (k, b_row) in b.iter().enumerate() {
+                acc += a[i][k] * b_row[j];
             }
             c[i][j] = acc;
         }
@@ -218,10 +218,10 @@ mod tests {
         // Values from pxform('J2000', 'ECLIPJ2000', 0.0).
         let m = j2000_to_eclipj2000();
         assert_eq!(m[0], [1.0, 0.0, 0.0]);
-        assert!((m[1][1] - 9.174_820_620_691_818_140e-01).abs() < 1e-15);
-        assert!((m[1][2] - 3.977_771_559_319_137_062e-01).abs() < 1e-15);
-        assert!((m[2][1] - (-3.977_771_559_319_137_062e-01)).abs() < 1e-15);
-        assert!((m[2][2] - 9.174_820_620_691_818_140e-01).abs() < 1e-15);
+        assert!((m[1][1] - 9.174_820_620_691_818e-1).abs() < 1e-15);
+        assert!((m[1][2] - 3.977_771_559_319_137e-1).abs() < 1e-15);
+        assert!((m[2][1] - (-3.977_771_559_319_137e-1)).abs() < 1e-15);
+        assert!((m[2][2] - 9.174_820_620_691_818e-1).abs() < 1e-15);
     }
 
     #[test]
@@ -240,10 +240,10 @@ mod tests {
         let r = j2000_to_eclipj2000();
         let rt = transpose3(&r);
         let prod = matmul3(&r, &rt);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in prod.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((prod[i][j] - expected).abs() < 1e-15);
+                assert!((v - expected).abs() < 1e-15);
             }
         }
     }
@@ -253,17 +253,13 @@ mod tests {
         // Top-left and bottom-right must be R; bottom-left must be dR;
         // top-right must be zero.
         let r = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
-        let dr = [
-            [0.1, 0.2, 0.3],
-            [0.4, 0.5, 0.6],
-            [0.7, 0.8, 0.9],
-        ];
+        let dr = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]];
         let m = sxform_from_rotation(&r, &dr);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(m[i][j], r[i][j]);
-                assert_eq!(m[i + 3][j + 3], r[i][j]);
-                assert_eq!(m[i + 3][j], dr[i][j]);
+        for (i, (r_row, dr_row)) in r.iter().zip(dr.iter()).enumerate() {
+            for (j, (&r_ij, &dr_ij)) in r_row.iter().zip(dr_row.iter()).enumerate() {
+                assert_eq!(m[i][j], r_ij);
+                assert_eq!(m[i + 3][j + 3], r_ij);
+                assert_eq!(m[i + 3][j], dr_ij);
                 assert_eq!(m[i][j + 3], 0.0);
             }
         }
@@ -281,13 +277,12 @@ mod tests {
         let m = sxform_from_rotation(&r, &dr);
         let inv = invert_sxform(&m);
         let prod = matmul6_test(&m, &inv);
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in prod.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (prod[i][j] - expected).abs() < 1e-12,
-                    "M·inv at [{i},{j}] = {}  (expected {expected})",
-                    prod[i][j]
+                    (v - expected).abs() < 1e-12,
+                    "M·inv at [{i},{j}] = {v}  (expected {expected})",
                 );
             }
         }
@@ -305,13 +300,12 @@ mod tests {
             let (r, _) = pck_euler_rotation_and_derivative(t1, t2, t3, 0.0, 0.0, 0.0);
             let rt = transpose3(&r);
             let prod = matmul3(&r, &rt);
-            for i in 0..3 {
-                for j in 0..3 {
+            for (i, row) in prod.iter().enumerate() {
+                for (j, &v) in row.iter().enumerate() {
                     let expected = if i == j { 1.0 } else { 0.0 };
                     assert!(
-                        (prod[i][j] - expected).abs() < 1e-14,
-                        "R·R^T[{i},{j}] = {} at angles ({t1},{t2},{t3})",
-                        prod[i][j]
+                        (v - expected).abs() < 1e-14,
+                        "R·R^T[{i},{j}] = {v} at angles ({t1},{t2},{t3})",
                     );
                 }
             }
@@ -359,14 +353,12 @@ mod tests {
     fn apply_sxform_on_identity_is_identity() {
         // 6×6 identity must reproduce the state.
         let mut ident = [[0.0f64; 6]; 6];
-        for i in 0..6 {
-            ident[i][i] = 1.0;
+        for (i, row) in ident.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
         let state = [1.0, -2.0, 3.5, 0.01, 0.02, -0.03];
         let out = apply_sxform(&ident, &state);
-        for i in 0..6 {
-            assert_eq!(out[i], state[i]);
-        }
+        assert_eq!(out, state);
     }
 
     #[test]
@@ -386,12 +378,24 @@ mod tests {
             r[2][0] * pos[0] + r[2][1] * pos[1] + r[2][2] * pos[2],
         ];
         let expected_vel = [
-            dr[0][0] * pos[0] + dr[0][1] * pos[1] + dr[0][2] * pos[2]
-                + r[0][0] * vel[0] + r[0][1] * vel[1] + r[0][2] * vel[2],
-            dr[1][0] * pos[0] + dr[1][1] * pos[1] + dr[1][2] * pos[2]
-                + r[1][0] * vel[0] + r[1][1] * vel[1] + r[1][2] * vel[2],
-            dr[2][0] * pos[0] + dr[2][1] * pos[1] + dr[2][2] * pos[2]
-                + r[2][0] * vel[0] + r[2][1] * vel[1] + r[2][2] * vel[2],
+            dr[0][0] * pos[0]
+                + dr[0][1] * pos[1]
+                + dr[0][2] * pos[2]
+                + r[0][0] * vel[0]
+                + r[0][1] * vel[1]
+                + r[0][2] * vel[2],
+            dr[1][0] * pos[0]
+                + dr[1][1] * pos[1]
+                + dr[1][2] * pos[2]
+                + r[1][0] * vel[0]
+                + r[1][1] * vel[1]
+                + r[1][2] * vel[2],
+            dr[2][0] * pos[0]
+                + dr[2][1] * pos[1]
+                + dr[2][2] * pos[2]
+                + r[2][0] * vel[0]
+                + r[2][1] * vel[1]
+                + r[2][2] * vel[2],
         ];
         for i in 0..3 {
             assert!((out[i] - expected_pos[i]).abs() < 1e-14);
@@ -412,8 +416,8 @@ mod tests {
         for i in 0..6 {
             for j in 0..6 {
                 let mut acc = 0.0;
-                for k in 0..6 {
-                    acc += a[i][k] * b[k][j];
+                for (k, b_row) in b.iter().enumerate() {
+                    acc += a[i][k] * b_row[j];
                 }
                 c[i][j] = acc;
             }

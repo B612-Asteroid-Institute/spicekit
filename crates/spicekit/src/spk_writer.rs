@@ -27,7 +27,7 @@ use crate::daf::{DOUBLE_BYTES, RECORD_BYTES};
 pub const SPK_ND: u32 = 2;
 pub const SPK_NI: u32 = 6;
 /// Summary size in doubles = ND + (NI+1)/2 = 5.
-pub const SPK_SUMMARY_DOUBLES: usize = 2 + (6 + 1) / 2;
+pub const SPK_SUMMARY_DOUBLES: usize = 2 + 6_usize.div_ceil(2);
 /// Summary slot size in bytes = 40.
 pub const SPK_SUMMARY_BYTES: usize = SPK_SUMMARY_DOUBLES * DOUBLE_BYTES;
 /// One summary record header = 24 bytes (NEXT, PREV, NSUM as f64 each).
@@ -157,19 +157,25 @@ impl SpkWriter {
             return Err(SpkWriterError::BadType9("no epochs"));
         }
         if seg.states.len() != 6 * n {
-            return Err(SpkWriterError::BadType9("states length != 6 * epochs length"));
+            return Err(SpkWriterError::BadType9(
+                "states length != 6 * epochs length",
+            ));
         }
         if seg.degree < 1 {
             return Err(SpkWriterError::BadType9("degree < 1"));
         }
         // Window = degree + 1 must be <= N to have enough samples.
         if (seg.degree as usize) + 1 > n {
-            return Err(SpkWriterError::BadType9("window (degree+1) exceeds sample count"));
+            return Err(SpkWriterError::BadType9(
+                "window (degree+1) exceeds sample count",
+            ));
         }
         // Epochs must be strictly increasing.
         for pair in seg.epochs.windows(2) {
-            if !(pair[0] < pair[1]) {
-                return Err(SpkWriterError::BadType9("epochs must be strictly increasing"));
+            if pair[0].partial_cmp(&pair[1]) != Some(std::cmp::Ordering::Less) {
+                return Err(SpkWriterError::BadType9(
+                    "epochs must be strictly increasing",
+                ));
             }
         }
         self.segments.push(Segment::Type9(seg));
@@ -215,8 +221,7 @@ impl SpkWriter {
         // Total size: 3 header/summary/name records + ceil(total_data_doubles
         // / 128) data records, each 1024 bytes.
         let total_data_doubles: usize = payloads.iter().map(|p| p.len()).sum();
-        let data_records =
-            (total_data_doubles + DOUBLES_PER_RECORD - 1) / DOUBLES_PER_RECORD;
+        let data_records = total_data_doubles.div_ceil(DOUBLES_PER_RECORD);
         let total_records = 3 + data_records;
         let mut buf = vec![0u8; total_records * RECORD_BYTES];
 
@@ -233,10 +238,7 @@ impl SpkWriter {
         );
 
         // ---- record 2: summary record ----
-        write_summary_record(
-            &mut buf[RECORD_BYTES..2 * RECORD_BYTES],
-            &segment_meta,
-        );
+        write_summary_record(&mut buf[RECORD_BYTES..2 * RECORD_BYTES], &segment_meta);
 
         // ---- record 3: name record ----
         write_name_record(&mut buf[2 * RECORD_BYTES..3 * RECORD_BYTES], &segment_meta);
@@ -293,7 +295,7 @@ struct SegmentMetaStub {
 }
 
 fn validate_segment_id(id: &str) -> Result<(), SpkWriterError> {
-    if id.as_bytes().len() > 40 {
+    if id.len() > 40 {
         return Err(SpkWriterError::SegmentIdTooLong(id.to_string()));
     }
     Ok(())
@@ -369,6 +371,11 @@ fn encode_type9(seg: &Type9Segment) -> Vec<f64> {
     out
 }
 
+// This fn writes the DAF file-record byte layout one field at a time; the
+// eight arguments are the header fields themselves. Bundling them into a
+// struct would only rename the bag without hiding anything, so the lint
+// is suppressed here.
+#[allow(clippy::too_many_arguments)]
 fn write_file_record(
     rec: &mut [u8],
     idword: &[u8; 8],
@@ -535,12 +542,12 @@ mod tests {
             // Linear motion in each axis: easier to cross-check Lagrange
             // interpolation since any degree ≥ 1 reproduces exactly.
             states.extend_from_slice(&[
-                1.0 + 0.5 * t,      // x
-                -2.0 + 0.1 * t,     // y
-                0.5 - 0.2 * t,      // z
-                0.5,                // vx
-                0.1,                // vy
-                -0.2,               // vz
+                1.0 + 0.5 * t,  // x
+                -2.0 + 0.1 * t, // y
+                0.5 - 0.2 * t,  // z
+                0.5,            // vx
+                0.1,            // vy
+                -0.2,           // vz
             ]);
         }
         let mut w = SpkWriter::new_spk("type9-test");

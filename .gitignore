@@ -1,2 +1,17 @@
 /target
 Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.benchmarks/
+.venv/
+dist/
+build/
+
+# maturin output
+*.so
+*.dylib
+*.pyd

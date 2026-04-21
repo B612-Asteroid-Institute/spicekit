@@ -283,9 +283,10 @@ impl SpkType9 {
     fn evaluate(&self, et: f64) -> Result<[f64; 6], SpkError> {
         let window = self.meta_degree + 1;
         let (i0, count) = pick_window(&self.file, self.epochs_start, self.n_states, window, et)?;
-        let epochs = self
-            .file
-            .read_doubles(self.epochs_start + i0 as u32, self.epochs_start + (i0 + count - 1) as u32)?;
+        let epochs = self.file.read_doubles(
+            self.epochs_start + i0 as u32,
+            self.epochs_start + (i0 + count - 1) as u32,
+        )?;
         let states = self.file.read_doubles(
             self.states_start + (6 * i0) as u32,
             self.states_start + (6 * (i0 + count) - 1) as u32,
@@ -333,11 +334,17 @@ impl SpkType13 {
     }
 
     fn evaluate(&self, et: f64) -> Result<[f64; 6], SpkError> {
-        let (i0, count) =
-            pick_window(&self.file, self.epochs_start, self.n_states, self.window_size, et)?;
-        let epochs = self
-            .file
-            .read_doubles(self.epochs_start + i0 as u32, self.epochs_start + (i0 + count - 1) as u32)?;
+        let (i0, count) = pick_window(
+            &self.file,
+            self.epochs_start,
+            self.n_states,
+            self.window_size,
+            et,
+        )?;
+        let epochs = self.file.read_doubles(
+            self.epochs_start + i0 as u32,
+            self.epochs_start + (i0 + count - 1) as u32,
+        )?;
         let states = self.file.read_doubles(
             self.states_start + (6 * i0) as u32,
             self.states_start + (6 * (i0 + count) - 1) as u32,
@@ -632,12 +639,7 @@ impl SpkFile {
     /// Try to satisfy the pair from a single segment (or a single
     /// reverse segment by negation). Returns `Ok(None)` when neither
     /// direction has coverage at `et`.
-    fn try_direct(
-        &self,
-        target: i32,
-        center: i32,
-        et: f64,
-    ) -> Result<Option<[f64; 6]>, SpkError> {
+    fn try_direct(&self, target: i32, center: i32, et: f64) -> Result<Option<[f64; 6]>, SpkError> {
         if let Some(indices) = self.index.get(&(target, center)) {
             for &i in indices {
                 let seg = &self.segments[i];
@@ -814,11 +816,7 @@ mod tests {
         let ys: Vec<_> = xs.iter().map(|&x| f(x)).collect();
         for x in [-1.7_f64, -0.2, 0.0, 0.8, 2.5] {
             let v = lagrange_eval(&xs, &ys, x);
-            assert!(
-                (v - f(x)).abs() < 1e-12,
-                "lagrange={v} expected={}",
-                f(x)
-            );
+            assert!((v - f(x)).abs() < 1e-12, "lagrange={v} expected={}", f(x));
         }
     }
 
@@ -882,7 +880,7 @@ mod synthetic_spk_tests {
         // nd=2, ni=6 is the SPK layout.
         let nd = 2u32;
         let ni = 6u32;
-        let ss_doubles = nd as usize + (ni as usize + 1) / 2; // 5
+        let ss_doubles = nd as usize + (ni as usize).div_ceil(2); // 5
         let summary_bytes = ss_doubles * DOUBLE_BYTES; // 40
 
         // Lay out data records. Address space is 1-indexed in doubles,
@@ -942,8 +940,7 @@ mod synthetic_spk_tests {
             record2[int_start..int_start + 4].copy_from_slice(&s.target.to_le_bytes());
             record2[int_start + 4..int_start + 8].copy_from_slice(&s.center.to_le_bytes());
             record2[int_start + 8..int_start + 12].copy_from_slice(&s.frame.to_le_bytes());
-            record2[int_start + 12..int_start + 16]
-                .copy_from_slice(&s.data_type.to_le_bytes());
+            record2[int_start + 12..int_start + 16].copy_from_slice(&s.data_type.to_le_bytes());
             record2[int_start + 16..int_start + 20]
                 .copy_from_slice(&(*start_addr as i32).to_le_bytes());
             record2[int_start + 20..int_start + 24]
@@ -1018,7 +1015,7 @@ mod synthetic_spk_tests {
         assert!((s[0] - 1.0).abs() < 1e-14); // x
         assert!((s[1] - 3.0).abs() < 1e-14); // y
         assert!((s[2] - 4.0).abs() < 1e-14); // z
-        // radius = 100 so vx = coef_x[1] * 1 / 100 = 0.02
+                                             // radius = 100 so vx = coef_x[1] * 1 / 100 = 0.02
         assert!((s[3] - 0.02).abs() < 1e-14);
         assert!((s[4] - 0.0).abs() < 1e-14);
         assert!((s[5] - (-0.01)).abs() < 1e-14);
@@ -1031,7 +1028,10 @@ mod synthetic_spk_tests {
         // df/ds = 12s + 2        → 8.0 at s=0.5
         // dx/dt = (df/ds)/radius → 0.16
         let seg = one_record_type2(
-            5, 0, -50.0, 50.0,
+            5,
+            0,
+            -50.0,
+            50.0,
             &[1.0, 2.0, 3.0],
             &[0.0, 0.0, 0.0],
             &[0.0, 0.0, 0.0],
@@ -1047,10 +1047,7 @@ mod synthetic_spk_tests {
     fn reverse_direction_negates_returned_state() {
         // Segment is target=3, center=10. Querying state(10, 3, et)
         // should reuse the same segment and flip all six components.
-        let seg = one_record_type2(
-            3, 10, -10.0, 10.0,
-            &[7.0, 0.5], &[-2.0, 1.5], &[3.0, -0.25],
-        );
+        let seg = one_record_type2(3, 10, -10.0, 10.0, &[7.0, 0.5], &[-2.0, 1.5], &[3.0, -0.25]);
         let tmp = build_spk(&[seg]);
         let spk = SpkFile::open(tmp.path()).expect("open");
         let forward = spk.state(3, 10, 0.0).expect("forward");
@@ -1067,18 +1064,19 @@ mod synthetic_spk_tests {
         //   segment B: target=3   (EMB),   center=0 (SSB)
         // Query state(399, 0) should return the sum; state(399, 10) of
         // Sun (10) also chains via SSB.
-        let seg_earth_from_emb = one_record_type2(
-            399, 3, -100.0, 100.0,
-            &[1.0, 0.0], &[2.0, 0.0], &[3.0, 0.0],
-        );
+        let seg_earth_from_emb =
+            one_record_type2(399, 3, -100.0, 100.0, &[1.0, 0.0], &[2.0, 0.0], &[3.0, 0.0]);
         let seg_emb_from_ssb = one_record_type2(
-            3, 0, -100.0, 100.0,
-            &[100.0, 0.0], &[200.0, 0.0], &[300.0, 0.0],
+            3,
+            0,
+            -100.0,
+            100.0,
+            &[100.0, 0.0],
+            &[200.0, 0.0],
+            &[300.0, 0.0],
         );
-        let seg_sun_from_ssb = one_record_type2(
-            10, 0, -100.0, 100.0,
-            &[0.1, 0.0], &[0.2, 0.0], &[0.3, 0.0],
-        );
+        let seg_sun_from_ssb =
+            one_record_type2(10, 0, -100.0, 100.0, &[0.1, 0.0], &[0.2, 0.0], &[0.3, 0.0]);
         let tmp = build_spk(&[seg_earth_from_emb, seg_emb_from_ssb, seg_sun_from_ssb]);
         let spk = SpkFile::open(tmp.path()).expect("open");
 
@@ -1164,14 +1162,8 @@ mod synthetic_spk_tests {
         // Two adjacent segments for the same (target, center). Each
         // covers a disjoint ET range and reports its own constant
         // position. Verify that lookups route to the correct segment.
-        let early = one_record_type2(
-            5, 0, -100.0, 0.0,
-            &[1.0, 0.0], &[0.0, 0.0], &[0.0, 0.0],
-        );
-        let late = one_record_type2(
-            5, 0, 0.0, 100.0,
-            &[2.0, 0.0], &[0.0, 0.0], &[0.0, 0.0],
-        );
+        let early = one_record_type2(5, 0, -100.0, 0.0, &[1.0, 0.0], &[0.0, 0.0], &[0.0, 0.0]);
+        let late = one_record_type2(5, 0, 0.0, 100.0, &[2.0, 0.0], &[0.0, 0.0], &[0.0, 0.0]);
         let tmp = build_spk(&[early, late]);
         let spk = SpkFile::open(tmp.path()).expect("open");
         let s_early = spk.state(5, 0, -50.0).expect("early");
@@ -1185,7 +1177,10 @@ mod synthetic_spk_tests {
         // Non-trivial coefficients — confirm the analytic velocity
         // agrees with a symmetric finite difference of position.
         let seg = one_record_type2(
-            5, 0, -1000.0, 1000.0,
+            5,
+            0,
+            -1000.0,
+            1000.0,
             &[0.1, -0.05, 0.02, -0.003],
             &[0.2, 0.04, -0.01, 0.005],
             &[0.3, 0.08, 0.015, -0.004],
@@ -1214,12 +1209,14 @@ mod synthetic_spk_tests {
     /// has its own (mid, radius) pair, and its own 3×N coefficient
     /// blocks. Used to verify the evaluator's record-selection math
     /// (`idx = floor((et - init) / intlen)`).
+    type Type2Record = (f64, f64, Vec<f64>, Vec<f64>, Vec<f64>);
+
     fn build_spk_multi_record_type2(
         target: i32,
         center: i32,
         init: f64,
         intlen: f64,
-        records: &[(f64, f64, Vec<f64>, Vec<f64>, Vec<f64>)],
+        records: &[Type2Record],
     ) -> NamedTempFile {
         let n_records = records.len();
         assert!(n_records > 0);
@@ -1272,10 +1269,8 @@ mod synthetic_spk_tests {
         record2[int_start + 4..int_start + 8].copy_from_slice(&center.to_le_bytes());
         record2[int_start + 8..int_start + 12].copy_from_slice(&1i32.to_le_bytes());
         record2[int_start + 12..int_start + 16].copy_from_slice(&2i32.to_le_bytes());
-        record2[int_start + 16..int_start + 20]
-            .copy_from_slice(&(start_addr as i32).to_le_bytes());
-        record2[int_start + 20..int_start + 24]
-            .copy_from_slice(&(end_addr as i32).to_le_bytes());
+        record2[int_start + 16..int_start + 20].copy_from_slice(&(start_addr as i32).to_le_bytes());
+        record2[int_start + 20..int_start + 24].copy_from_slice(&(end_addr as i32).to_le_bytes());
 
         let mut record3 = vec![b' '; RECORD_BYTES];
         let name = b"MULTI REC";
@@ -1306,9 +1301,10 @@ mod synthetic_spk_tests {
         // One segment with three records, each returning a distinct
         // constant position. Record i covers [init + i*intlen, init + (i+1)*intlen).
         let tmp = build_spk_multi_record_type2(
-            5, 0,
-            0.0,       // init
-            100.0,     // intlen
+            5,
+            0,
+            0.0,   // init
+            100.0, // intlen
             &[
                 (50.0, 50.0, vec![10.0, 0.0], vec![0.0, 0.0], vec![0.0, 0.0]),
                 (150.0, 50.0, vec![20.0, 0.0], vec![0.0, 0.0], vec![0.0, 0.0]),

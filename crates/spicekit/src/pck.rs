@@ -38,11 +38,7 @@ pub enum PckError {
     #[error(transparent)]
     Daf(#[from] DafError),
     #[error("no segment covers body {body} in frame {ref_frame} at et {et}")]
-    NoCoverage {
-        body: i32,
-        ref_frame: i32,
-        et: f64,
-    },
+    NoCoverage { body: i32, ref_frame: i32, et: f64 },
     #[error("unsupported PCK data type {0}")]
     UnsupportedType(i32),
     #[error("malformed PCK Type 2 segment: {0}")]
@@ -237,6 +233,9 @@ mod tests {
     /// Build a PCK file with one Type 2 segment. `coefs_ra`, `coefs_dec`,
     /// and `coefs_w` must all have the same length (= n_coef) and will
     /// appear in a single data record spanning `[mid-radius, mid+radius]`.
+    // Test helper that lays out a PCK byte-for-byte; each argument is a
+    // distinct file field, so a struct would add noise without clarity.
+    #[allow(clippy::too_many_arguments)]
     fn build_single_segment_pck(
         body_frame: i32,
         ref_frame: i32,
@@ -301,8 +300,10 @@ mod tests {
         record2[int_start..int_start + 4].copy_from_slice(&body_frame.to_le_bytes());
         record2[int_start + 4..int_start + 8].copy_from_slice(&ref_frame.to_le_bytes());
         record2[int_start + 8..int_start + 12].copy_from_slice(&2i32.to_le_bytes()); // dtype=2
-        record2[int_start + 12..int_start + 16].copy_from_slice(&(data_start_addr as i32).to_le_bytes());
-        record2[int_start + 16..int_start + 20].copy_from_slice(&(data_end_addr as i32).to_le_bytes());
+        record2[int_start + 12..int_start + 16]
+            .copy_from_slice(&(data_start_addr as i32).to_le_bytes());
+        record2[int_start + 16..int_start + 20]
+            .copy_from_slice(&(data_end_addr as i32).to_le_bytes());
 
         let mut record3 = vec![b' '; RECORD_BYTES];
         let name = b"SYNTHETIC TEST SEGMENT";
@@ -393,9 +394,7 @@ mod tests {
             &[0.0, 0.0],
         );
         let pck = PckFile::open(tmp.path()).expect("open");
-        let (ref_id, _state) = pck
-            .euler_state_with_ref(ITRF93_FRAME, 0.0)
-            .expect("eval");
+        let (ref_id, _state) = pck.euler_state_with_ref(ITRF93_FRAME, 0.0).expect("eval");
         assert_eq!(ref_id, ECLIPJ2000_FRAME);
     }
 
@@ -422,7 +421,10 @@ mod tests {
             let dra_fd = (rap - ram) / (2.0 * h);
             let ddec_fd = (decp - decm) / (2.0 * h);
             let dw_fd = (wp - wm) / (2.0 * h);
-            assert!((dra - dra_fd).abs() < 1e-9, "dra et={et}: {dra} vs {dra_fd}");
+            assert!(
+                (dra - dra_fd).abs() < 1e-9,
+                "dra et={et}: {dra} vs {dra_fd}"
+            );
             assert!(
                 (ddec - ddec_fd).abs() < 1e-9,
                 "ddec et={et}: {ddec} vs {ddec_fd}"
@@ -516,7 +518,7 @@ mod tests {
     /// record; summaries appear in a single summary record in the
     /// order supplied.
     fn build_multi_segment_pck(segs: &[SegSpec]) -> NamedTempFile {
-        let ss_doubles = 2 + (5 + 1) / 2; // nd=2, ni=5 → 5 doubles
+        let ss_doubles = 2 + 5_usize.div_ceil(2); // nd=2, ni=5 → 5 doubles
         let summary_bytes = ss_doubles * DOUBLE_BYTES; // 40
 
         let doubles_per_record = (RECORD_BYTES / DOUBLE_BYTES) as u32;
@@ -627,9 +629,17 @@ mod tests {
         let pck = PckFile::open(tmp.path()).expect("open");
         // In the overlap: later wins (RA=2.0).
         let overlap = pck.euler_state(ITRF93_FRAME, 0.0).expect("overlap");
-        assert!((overlap[0] - 2.0).abs() < 1e-14, "RA in overlap={}", overlap[0]);
+        assert!(
+            (overlap[0] - 2.0).abs() < 1e-14,
+            "RA in overlap={}",
+            overlap[0]
+        );
         // Outside the later segment but inside the earlier: earlier wins (RA=1.0).
         let outside = pck.euler_state(ITRF93_FRAME, 75.0).expect("outside");
-        assert!((outside[0] - 1.0).abs() < 1e-14, "RA outside={}", outside[0]);
+        assert!(
+            (outside[0] - 1.0).abs() < 1e-14,
+            "RA outside={}",
+            outside[0]
+        );
     }
 }

@@ -48,6 +48,10 @@ struct DafInner {
     pub nd: u32,
     pub ni: u32,
     pub fward: u32,
+    // Backward record pointer from the DAF file record. Retained for
+    // spec completeness; spicekit walks summary records forward from
+    // `fward` and never needs it at read time.
+    #[allow(dead_code)]
     pub bward: u32,
 }
 
@@ -55,7 +59,7 @@ struct DafInner {
 /// record pair.
 #[derive(Debug, Clone)]
 pub struct Summary {
-    pub doubles: Vec<f64>, // length == nd
+    pub doubles: Vec<f64>,  // length == nd
     pub integers: Vec<i32>, // length == ni
     pub name: String,
 }
@@ -116,7 +120,7 @@ impl DafFile {
 
     /// Number of doubles per summary = ND + (NI+1)/2.
     pub fn summary_size_doubles(&self) -> usize {
-        self.inner.nd as usize + (self.inner.ni as usize + 1) / 2
+        self.inner.nd as usize + (self.inner.ni as usize).div_ceil(2)
     }
 
     /// Enumerate every (summary, name) pair across the summary-record chain.
@@ -174,18 +178,14 @@ impl DafFile {
             let mut doubles = Vec::with_capacity(nd);
             for k in 0..nd {
                 let off = k * DOUBLE_BYTES;
-                doubles.push(f64::from_le_bytes(
-                    sslice[off..off + 8].try_into().unwrap(),
-                ));
+                doubles.push(f64::from_le_bytes(sslice[off..off + 8].try_into().unwrap()));
             }
             // NI integers (2 per double; trailing int padded if NI odd).
             let mut integers = Vec::with_capacity(ni);
             let int_start = nd * DOUBLE_BYTES;
             for k in 0..ni {
                 let off = int_start + k * 4;
-                integers.push(i32::from_le_bytes(
-                    sslice[off..off + 4].try_into().unwrap(),
-                ));
+                integers.push(i32::from_le_bytes(sslice[off..off + 4].try_into().unwrap()));
             }
             // Matching name slot in the following record.
             let noff = i * name_chars;
@@ -285,8 +285,10 @@ mod tests {
         summaries: &[(Vec<f64>, Vec<i32>, String)],
         data: &[f64],
     ) -> (NamedTempFile, Vec<u8>) {
-        assert!(summaries.iter().all(|(d, i, _)| d.len() == nd as usize && i.len() == ni as usize));
-        let ss_doubles = nd as usize + (ni as usize + 1) / 2;
+        assert!(summaries
+            .iter()
+            .all(|(d, i, _)| d.len() == nd as usize && i.len() == ni as usize));
+        let ss_doubles = nd as usize + (ni as usize).div_ceil(2);
         let summary_bytes = ss_doubles * DOUBLE_BYTES;
 
         // ---- file record (record 1) ----
@@ -316,7 +318,8 @@ mod tests {
             }
             let int_start = soff + (nd as usize) * DOUBLE_BYTES;
             for (k, v) in integers.iter().enumerate() {
-                record2[int_start + k * 4..int_start + (k + 1) * 4].copy_from_slice(&v.to_le_bytes());
+                record2[int_start + k * 4..int_start + (k + 1) * 4]
+                    .copy_from_slice(&v.to_le_bytes());
             }
         }
 
@@ -464,7 +467,7 @@ mod tests {
         let mut record3 = vec![b' '; RECORD_BYTES];
         // Manually overwrite the first name slot so it starts with "SATURN"
         // followed by NULs (not spaces).
-        let slot_bytes = (2 + (6 + 1) / 2) * DOUBLE_BYTES; // 5 * 8 = 40
+        let slot_bytes = (2 + 6_usize.div_ceil(2)) * DOUBLE_BYTES; // 5 * 8 = 40
         for b in &mut record3[..slot_bytes] {
             *b = 0;
         }
@@ -482,7 +485,7 @@ mod tests {
         record2[0..8].copy_from_slice(&0.0f64.to_le_bytes()); // NEXT
         record2[8..16].copy_from_slice(&0.0f64.to_le_bytes()); // PREV
         record2[16..24].copy_from_slice(&1.0f64.to_le_bytes()); // NSUM
-        // Summary contents don't matter for this test; leave as zeros.
+                                                                // Summary contents don't matter for this test; leave as zeros.
 
         let mut all = Vec::new();
         all.extend_from_slice(&record1);

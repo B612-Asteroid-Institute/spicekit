@@ -37,9 +37,7 @@ pub enum TextKernelError {
     },
     #[error("parse error at line {line}: {message}")]
     Parse { line: usize, message: String },
-    #[error(
-        "NAIF_BODY_NAME has {names} entries but NAIF_BODY_CODE has {codes} — they must match"
-    )]
+    #[error("NAIF_BODY_NAME has {names} entries but NAIF_BODY_CODE has {codes} — they must match")]
     Mismatched { names: usize, codes: usize },
 }
 
@@ -234,9 +232,7 @@ fn skip_equals(bytes: &[u8], mut i: usize) -> Result<(usize, usize), TextKernelE
         Ok((i, delta))
     } else {
         // Allow newline between key and operator (rare but legal).
-        while i < bytes.len()
-            && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n')
-        {
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n') {
             if bytes[i] == b'\n' {
                 delta += 1;
             }
@@ -259,10 +255,7 @@ fn skip_equals(bytes: &[u8], mut i: usize) -> Result<(usize, usize), TextKernelE
 
 /// Read a scalar or parenthesised list of values starting at `i`.
 /// Returns (next_index, values, newlines_consumed).
-fn read_values(
-    text: &str,
-    mut i: usize,
-) -> Result<(usize, Vec<Value>, usize), String> {
+fn read_values(text: &str, mut i: usize) -> Result<(usize, Vec<Value>, usize), String> {
     let bytes = text.as_bytes();
     let mut values = Vec::new();
     let mut delta = 0usize;
@@ -358,7 +351,8 @@ fn read_values(
                 i += 1;
                 while i < bytes.len() {
                     let c = bytes[i];
-                    if c.is_ascii_alphanumeric() || c == b'-' || c == b':' || c == b'.' || c == b'/' {
+                    if c.is_ascii_alphanumeric() || c == b'-' || c == b':' || c == b'.' || c == b'/'
+                    {
                         i += 1;
                     } else {
                         break;
@@ -368,9 +362,7 @@ fn read_values(
             }
             b if b.is_ascii_alphabetic() || b == b'_' => {
                 // Bare identifier / symbol (e.g. logical TRUE). Skip.
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-                {
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1;
                 }
                 values.push(Value::Other);
@@ -394,7 +386,13 @@ mod tests {
         let kernel = "KPL/FK\n\n\\begindata\n  NAIF_BODY_NAME += ( 'JWST', 'JAMES WEBB SPACE TELESCOPE' )\n  NAIF_BODY_CODE += ( -170, -170 )\n\\begintext\n";
         let bindings = parse_body_bindings_from_str(kernel).unwrap();
         assert_eq!(bindings.len(), 2);
-        assert_eq!(bindings[0], BodyBinding { name: "JWST".into(), code: -170 });
+        assert_eq!(
+            bindings[0],
+            BodyBinding {
+                name: "JWST".into(),
+                code: -170
+            }
+        );
         assert_eq!(
             bindings[1],
             BodyBinding {
@@ -408,16 +406,26 @@ mod tests {
     fn ignores_comment_sections() {
         let kernel = "Free text preamble.\n   NAIF_BODY_NAME += ( 'IGNORED' )\n   NAIF_BODY_CODE += ( 999 )\n\n\\begindata\n  NAIF_BODY_NAME += ( 'CUSTOM' )\n  NAIF_BODY_CODE += ( -999 )\n\\begintext\n";
         let bindings = parse_body_bindings_from_str(kernel).unwrap();
-        assert_eq!(bindings, vec![BodyBinding { name: "CUSTOM".into(), code: -999 }]);
+        assert_eq!(
+            bindings,
+            vec![BodyBinding {
+                name: "CUSTOM".into(),
+                code: -999
+            }]
+        );
     }
 
     #[test]
     fn supports_scalar_and_equals() {
-        let kernel = "\\begindata\n  NAIF_BODY_NAME = 'LONE_BODY'\n  NAIF_BODY_CODE = -42\n\\begintext\n";
+        let kernel =
+            "\\begindata\n  NAIF_BODY_NAME = 'LONE_BODY'\n  NAIF_BODY_CODE = -42\n\\begintext\n";
         let bindings = parse_body_bindings_from_str(kernel).unwrap();
         assert_eq!(
             bindings,
-            vec![BodyBinding { name: "LONE_BODY".into(), code: -42 }]
+            vec![BodyBinding {
+                name: "LONE_BODY".into(),
+                code: -42
+            }]
         );
     }
 
@@ -428,8 +436,14 @@ mod tests {
         assert_eq!(
             bindings,
             vec![
-                BodyBinding { name: "A".into(), code: 1 },
-                BodyBinding { name: "B".into(), code: 2 },
+                BodyBinding {
+                    name: "A".into(),
+                    code: 1
+                },
+                BodyBinding {
+                    name: "B".into(),
+                    code: 2
+                },
             ]
         );
     }
@@ -438,7 +452,10 @@ mod tests {
     fn rejects_mismatched_arrays() {
         let kernel = "\\begindata\n  NAIF_BODY_NAME += ( 'A', 'B' )\n  NAIF_BODY_CODE += ( 1 )\n\\begintext\n";
         let err = parse_body_bindings_from_str(kernel).unwrap_err();
-        assert!(matches!(err, TextKernelError::Mismatched { names: 2, codes: 1 }));
+        assert!(matches!(
+            err,
+            TextKernelError::Mismatched { names: 2, codes: 1 }
+        ));
     }
 
     #[test]
@@ -454,7 +471,13 @@ mod tests {
     fn ignores_unrelated_assignments() {
         let kernel = "\\begindata\n  OBJECT_EARTH_FRAME = 'ITRF93'\n  NAIF_BODY_NAME += ( 'ONE' )\n  NAIF_BODY_CODE += ( 1 )\n  DELTET/DELTA_T_A = 32.184\n\\begintext\n";
         let bindings = parse_body_bindings_from_str(kernel).unwrap();
-        assert_eq!(bindings, vec![BodyBinding { name: "ONE".into(), code: 1 }]);
+        assert_eq!(
+            bindings,
+            vec![BodyBinding {
+                name: "ONE".into(),
+                code: 1
+            }]
+        );
     }
 
     #[test]
@@ -487,6 +510,12 @@ NAIF_BODY_CODE += ( -12345 )
 \begintext
 "#;
         let bindings = parse_body_bindings_from_str(kernel).unwrap();
-        assert_eq!(bindings, vec![BodyBinding { name: "EXTRA_BODY".into(), code: -12345 }]);
+        assert_eq!(
+            bindings,
+            vec![BodyBinding {
+                name: "EXTRA_BODY".into(),
+                code: -12345
+            }]
+        );
     }
 }
