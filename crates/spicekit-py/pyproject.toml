@@ -1,0 +1,48 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "spicekit"
+version = "0.1.0"
+description = "Python bindings for spicekit: pure-Rust NAIF kernel readers (DAF/SPK/PCK/text kernels)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Alec Koumjian", email = "alec@b612foundation.org" },
+    { name = "Asteroid Institute" },
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Rust",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "naif-leapseconds",
+    "naif-de440",
+    "naif-earth-itrf93",
+    "naif-eop-high-prec",
+]
+
+[project.urls]
+Repository = "https://github.com/B612-Asteroid-Institute/spicekit"
+Issues = "https://github.com/B612-Asteroid-Institute/spicekit/issues"
+Changelog = "https://github.com/B612-Asteroid-Institute/spicekit/blob/main/CHANGELOG.md"
+
+[tool.maturin]
+module-name = "spicekit._rust_native"
+python-source = "python"
+features = ["pyo3/extension-module"]

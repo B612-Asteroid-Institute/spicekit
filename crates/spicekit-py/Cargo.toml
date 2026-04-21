@@ -1,0 +1,22 @@
+[package]
+name = "spicekit-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Python bindings for spicekit (pure-Rust NAIF kernel readers)."
+readme = "README.md"
+publish = false
+
+[lib]
+name = "_rust_native"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+spicekit = { path = "../spicekit" }
+pyo3 = { version = "0.22", features = ["extension-module"] }
+numpy = "0.22"
+ndarray = "0.16"
