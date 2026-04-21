@@ -15,8 +15,8 @@ use std::os::raw::c_char;
 use std::sync::{Mutex, Once};
 
 use cspice_sys::{
-    bodn2c_c, erract_c, failed_c, furnsh_c, getmsg_c, pxform_c, reset_c, spkez_c, sxform_c,
-    unload_c, SpiceBoolean, SpiceDouble, SpiceInt,
+    bodc2n_c, bodn2c_c, erract_c, failed_c, furnsh_c, getmsg_c, pxform_c, reset_c, spkez_c,
+    sxform_c, unload_c, SpiceBoolean, SpiceDouble, SpiceInt,
 };
 
 static CSPICE_LOCK: Mutex<()> = Mutex::new(());
@@ -176,12 +176,36 @@ pub fn bodn2c(name: &str) -> Result<Option<i32>, SpiceError> {
     let mut code: SpiceInt = 0;
     let mut found: SpiceBoolean = 0;
     unsafe {
-        bodn2c_c(
-            c_name.as_ptr() as *mut c_char,
-            &mut code,
+        bodn2c_c(c_name.as_ptr() as *mut c_char, &mut code, &mut found);
+    }
+    check_and_reset()?;
+    Ok(if found != 0 { Some(code as i32) } else { None })
+}
+
+/// Returns `Ok(Some(name))` when the code resolves, `Ok(None)` when
+/// CSpice reports not-found, `Err` on a CSpice runtime error. Names
+/// are null-terminated and trimmed of trailing whitespace.
+pub fn bodc2n(code: i32) -> Result<Option<String>, SpiceError> {
+    const NAME_LEN: usize = 64;
+    let _guard = CSPICE_LOCK.lock().unwrap();
+    ensure_return_on_error();
+    let mut buf = vec![0 as c_char; NAME_LEN];
+    let mut found: SpiceBoolean = 0;
+    unsafe {
+        bodc2n_c(
+            code as SpiceInt,
+            NAME_LEN as SpiceInt,
+            buf.as_mut_ptr(),
             &mut found,
         );
     }
     check_and_reset()?;
-    Ok(if found != 0 { Some(code as i32) } else { None })
+    if found == 0 {
+        return Ok(None);
+    }
+    let name = unsafe { CStr::from_ptr(buf.as_ptr()) }
+        .to_string_lossy()
+        .trim_end()
+        .to_string();
+    Ok(Some(name))
 }

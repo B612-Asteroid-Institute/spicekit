@@ -67,12 +67,11 @@ fn spkez_case(target: i32, observer: i32, frame: &str) {
         .spkez_batch(target, observer, frame, &ets)
         .expect("spicekit spkez_batch");
     for (i, &et) in ets.iter().enumerate() {
-        let (c, _) = cspice_wrap::spkez(target, et, frame, "NONE", observer)
-            .expect("cspice spkez");
-        for k in 0..6 {
+        let (c, _) = cspice_wrap::spkez(target, et, frame, "NONE", observer).expect("cspice spkez");
+        for (k, &ck) in c.iter().enumerate() {
             assert_allclose(
                 rust_out[i][k],
-                c[k],
+                ck,
                 1e-14,
                 1e-7,
                 &format!(
@@ -124,16 +123,14 @@ fn pxform_case(frame_from: &str, frame_to: &str) {
         .expect("spicekit pxform_batch");
     for (i, &et) in ets.iter().enumerate() {
         let c = cspice_wrap::pxform(frame_from, frame_to, et).expect("cspice pxform");
-        for r in 0..3 {
-            for col in 0..3 {
+        for (r, row) in c.iter().enumerate() {
+            for (col, &c_rc) in row.iter().enumerate() {
                 assert_allclose(
                     rust_out[i][r][col],
-                    c[r][col],
+                    c_rc,
                     0.0,
                     1e-12,
-                    &format!(
-                        "pxform {frame_from}->{frame_to} et={et} i={i} [{r}][{col}]"
-                    ),
+                    &format!("pxform {frame_from}->{frame_to} et={et} i={i} [{r}][{col}]"),
                 );
             }
         }
@@ -176,16 +173,14 @@ fn sxform_case(frame_from: &str, frame_to: &str) {
         .expect("spicekit sxform_batch");
     for (i, &et) in ets.iter().enumerate() {
         let c = cspice_wrap::sxform(frame_from, frame_to, et).expect("cspice sxform");
-        for r in 0..6 {
-            for col in 0..6 {
+        for (r, row) in c.iter().enumerate() {
+            for (col, &c_rc) in row.iter().enumerate() {
                 assert_allclose(
                     rust_out[i][r][col],
-                    c[r][col],
+                    c_rc,
                     0.0,
                     1e-11,
-                    &format!(
-                        "sxform {frame_from}->{frame_to} et={et} i={i} [{r}][{col}]"
-                    ),
+                    &format!("sxform {frame_from}->{frame_to} et={et} i={i} [{r}][{col}]"),
                 );
             }
         }
@@ -218,15 +213,90 @@ fn bodn2c_case(name: &str) {
     assert_eq!(r, c, "bodn2c mismatch for {name}");
 }
 
-#[test] fn bodn2c_parity_sun()                  { bodn2c_case("SUN"); }
-#[test] fn bodn2c_parity_earth()                { bodn2c_case("EARTH"); }
-#[test] fn bodn2c_parity_mars_barycenter()      { bodn2c_case("MARS BARYCENTER"); }
-#[test] fn bodn2c_parity_moon()                 { bodn2c_case("MOON"); }
-#[test] fn bodn2c_parity_ssb()                  { bodn2c_case("SOLAR SYSTEM BARYCENTER"); }
-#[test] fn bodn2c_parity_jwst()                 { bodn2c_case("JWST"); }
-#[test] fn bodn2c_parity_jwst_full()            { bodn2c_case("JAMES WEBB SPACE TELESCOPE"); }
-#[test] fn bodn2c_parity_hst()                  { bodn2c_case("HST"); }
-#[test] fn bodn2c_parity_hst_full()             { bodn2c_case("HUBBLE SPACE TELESCOPE"); }
+#[test]
+fn bodn2c_parity_sun() {
+    bodn2c_case("SUN");
+}
+#[test]
+fn bodn2c_parity_earth() {
+    bodn2c_case("EARTH");
+}
+#[test]
+fn bodn2c_parity_mars_barycenter() {
+    bodn2c_case("MARS BARYCENTER");
+}
+#[test]
+fn bodn2c_parity_moon() {
+    bodn2c_case("MOON");
+}
+#[test]
+fn bodn2c_parity_ssb() {
+    bodn2c_case("SOLAR SYSTEM BARYCENTER");
+}
+#[test]
+fn bodn2c_parity_jwst() {
+    bodn2c_case("JWST");
+}
+#[test]
+fn bodn2c_parity_jwst_full() {
+    bodn2c_case("JAMES WEBB SPACE TELESCOPE");
+}
+#[test]
+fn bodn2c_parity_hst() {
+    bodn2c_case("HST");
+}
+#[test]
+fn bodn2c_parity_hst_full() {
+    bodn2c_case("HUBBLE SPACE TELESCOPE");
+}
+
+// ---------------------------------------------------------------------
+// bodc2n_parity — canonical reverse-lookup spelling must match CSpice
+// for every code in the built-in table.
+// ---------------------------------------------------------------------
+
+#[test]
+fn bodc2n_parity_all_builtin_codes() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    // `bodc2n` needs no kernels — it only reads the built-in table.
+    let rust_backend = spicekit_bench::Backend::new();
+    let _ = rust_backend; // silence unused in case Backend grows state
+
+    // Unique codes preserving first-seen order (same order spicekit's
+    // `bodc2n` resolves canonical-per-code).
+    let mut seen: std::collections::HashSet<i32> = std::collections::HashSet::new();
+    let mut codes: Vec<i32> = Vec::new();
+    for &(_, code) in spicekit::naif_ids::builtin_entries() {
+        if seen.insert(code) {
+            codes.push(code);
+        }
+    }
+    assert!(!codes.is_empty(), "built-in table should contain codes");
+
+    let mut mismatches: Vec<String> = Vec::new();
+    for &code in &codes {
+        let rust_name = spicekit::naif_ids::bodc2n(code)
+            .unwrap_or_else(|e| panic!("spicekit bodc2n({code}) failed: {e}"));
+        let cspice_name = match cspice_wrap::bodc2n(code).expect("cspice bodc2n call") {
+            Some(n) => n,
+            None => {
+                // CSpice doesn't know this code; spicekit has a name for
+                // it but we can't parity-check that — skip.
+                continue;
+            }
+        };
+        if rust_name != cspice_name {
+            mismatches.push(format!(
+                "code {code}: spicekit={rust_name:?} cspice={cspice_name:?}"
+            ));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "bodc2n canonical-name mismatches:\n  {}",
+        mismatches.join("\n  ")
+    );
+}
 
 // ---------------------------------------------------------------------
 // Text-kernel binding semantics (spicekit-only; no CSpice needed)

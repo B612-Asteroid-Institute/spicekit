@@ -26,8 +26,9 @@ pub enum NaifIdError {
 }
 
 // Full 692-entry built-in table, generated from CSpice's zzidmap.c.
-// Ordering matches CSpice so reverse lookups return the same canonical
-// spelling CSpice would (first-occurrence wins).
+// For each NAIF code, the first alias listed is the one CSpice's
+// `bodc2n` returns as canonical — `bodc2n` below returns the first
+// occurrence so the canonical-ordering is load-bearing for parity.
 include!("naif_builtin_table.rs");
 
 static NAME_TO_CODE: OnceLock<HashMap<String, i32>> = OnceLock::new();
@@ -106,6 +107,12 @@ pub fn builtin_len() -> usize {
     BUILTIN.len()
 }
 
+/// Read-only view of the built-in (name, code) table. Exposed for the
+/// spicekit-bench CSpice-parity suite to iterate every code.
+pub fn builtin_entries() -> &'static [(&'static str, i32)] {
+    BUILTIN
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,12 +158,15 @@ mod tests {
     }
 
     #[test]
-    fn reverse_lookup_returns_canonical() {
-        // SOLAR_SYSTEM_BARYCENTER is first in CSpice's table for code 0,
-        // so that's the canonical spelling.
-        assert_eq!(bodc2n(0).unwrap(), "SOLAR_SYSTEM_BARYCENTER");
+    fn reverse_lookup_returns_cspice_canonical() {
+        // These canonical names match CSpice's `bodc2n` bit-for-bit. The
+        // `bodc2n_parity_all_builtin_codes` test in spicekit-bench
+        // enforces parity across every code in the table.
+        assert_eq!(bodc2n(0).unwrap(), "SOLAR SYSTEM BARYCENTER");
+        assert_eq!(bodc2n(4).unwrap(), "MARS BARYCENTER");
         assert_eq!(bodc2n(399).unwrap(), "EARTH");
-        assert_eq!(bodc2n(-170).unwrap(), "JWST");
+        assert_eq!(bodc2n(-170).unwrap(), "JAMES WEBB SPACE TELESCOPE");
+        assert_eq!(bodc2n(-48).unwrap(), "HST");
     }
 
     #[test]
