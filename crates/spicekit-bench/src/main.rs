@@ -113,12 +113,7 @@ fn print_row(op: &str, case: &str, n: usize, cspice: Timings, spicekit: Timings)
     let speedup_p95 = cspice.p95_us / spicekit.p95_us;
     println!(
         "| {op} | {case} | {n} | {:.2} | {:.2} | {:.2}x | {:.2} | {:.2} | {:.2}x |",
-        cspice.p50_us,
-        spicekit.p50_us,
-        speedup_p50,
-        cspice.p95_us,
-        spicekit.p95_us,
-        speedup_p95,
+        cspice.p50_us, spicekit.p50_us, speedup_p50, cspice.p95_us, spicekit.p95_us, speedup_p95,
     );
 }
 
@@ -168,9 +163,7 @@ fn main() {
                 }
             });
             let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
-                spicekit
-                    .pxform_batch(frame_from, frame_to, &ets)
-                    .unwrap();
+                spicekit.pxform_batch(frame_from, frame_to, &ets).unwrap();
             });
             print_row("pxform_batch", &label_pair, n, cspice_t, spicekit_t);
 
@@ -180,9 +173,7 @@ fn main() {
                 }
             });
             let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
-                spicekit
-                    .sxform_batch(frame_from, frame_to, &ets)
-                    .unwrap();
+                spicekit.sxform_batch(frame_from, frame_to, &ets).unwrap();
             });
             print_row("sxform_batch", &label_pair, n, cspice_t, spicekit_t);
         }
@@ -200,12 +191,6 @@ fn main() {
                 let _ = spicekit.bodn2c(name).unwrap();
             }
         });
-        print_row(
-            "bodn2c",
-            name,
-            BODN2C_CALLS_PER_ITER,
-            cspice_t,
-            spicekit_t,
-        );
+        print_row("bodn2c", name, BODN2C_CALLS_PER_ITER, cspice_t, spicekit_t);
     }
 }

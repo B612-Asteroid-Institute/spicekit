@@ -2,6 +2,7 @@
 name = "spicekit-bench"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Side-by-side microbenchmarks and parity tests comparing spicekit to the CSpice reference toolkit. Not published to crates.io."
 publish = false
@@ -15,7 +16,10 @@ name = "spicekit-bench"
 path = "src/main.rs"
 
 [features]
-default = ["cspice"]
+# CSpice FFI is opt-in so `cargo build --workspace` works without a
+# CSpice toolkit installed. Enable the parity oracle with:
+#   cargo test -p spicekit-bench --features cspice
+default = []
 cspice = ["dep:cspice-sys"]
 
 [dependencies]

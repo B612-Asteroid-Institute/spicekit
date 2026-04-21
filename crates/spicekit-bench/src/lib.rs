@@ -303,12 +303,12 @@ fn is_inertial(name: &str) -> bool {
 /// dep besides what spicekit already exposes.
 fn apply6(m: &[[f64; 6]; 6], v: &[f64; 6]) -> [f64; 6] {
     let mut out = [0.0; 6];
-    for i in 0..6 {
+    for (i, out_i) in out.iter_mut().enumerate() {
         let mut acc = 0.0;
-        for j in 0..6 {
-            acc += m[i][j] * v[j];
+        for (j, &vj) in v.iter().enumerate() {
+            acc += m[i][j] * vj;
         }
-        out[i] = acc;
+        *out_i = acc;
     }
     out
 }
@@ -328,8 +328,8 @@ fn matmul6(a: &[[f64; 6]; 6], b: &[[f64; 6]; 6]) -> [[f64; 6]; 6] {
     for i in 0..6 {
         for j in 0..6 {
             let mut acc = 0.0;
-            for k in 0..6 {
-                acc += a[i][k] * b[k][j];
+            for (k, b_row) in b.iter().enumerate() {
+                acc += a[i][k] * b_row[j];
             }
             c[i][j] = acc;
         }
