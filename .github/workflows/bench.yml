@@ -24,6 +24,12 @@ jobs:
     # itself builds.
     runs-on: ubuntu-latest
 
+    # Override rust-toolchain.toml (pinned at MSRV 1.85 for the core crate):
+    # cspice-sys's transitive deps require 1.88+. spicekit-bench is
+    # unpublished (publish = false) so it can float to stable.
+    env:
+      RUSTUP_TOOLCHAIN: stable
+
     steps:
       - uses: actions/checkout@v4
 
