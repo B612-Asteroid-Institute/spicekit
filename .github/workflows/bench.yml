@@ -77,13 +77,13 @@ jobs:
       - name: Build bench crate (with CSpice)
         # First build ensures cspice-sys's `downloadcspice` finishes
         # before any `cargo test` / `cargo run` tries to link.
-        run: cargo build --release -p spicekit-bench
+        run: cargo build --release -p spicekit-bench --features cspice
 
       - name: Run parity tests (spicekit vs CSpice)
-        run: cargo test --release -p spicekit-bench
+        run: cargo test --release -p spicekit-bench --features cspice
 
       - name: Run side-by-side benchmark
-        run: cargo run --release --bin spicekit-bench | tee bench_raw.md
+        run: cargo run --release --bin spicekit-bench --features cspice | tee bench_raw.md
 
       - name: Render BENCHMARKS.md
         # Wrap the raw table in a header block so the committed file
