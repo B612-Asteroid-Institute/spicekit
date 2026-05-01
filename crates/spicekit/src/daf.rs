@@ -6,6 +6,27 @@
 //! Chebyshev coefficients) is the caller's responsibility.
 //!
 //! Reference: NAIF "DAF Required Reading" (daf.req).
+//!
+//! # Host-endianness assumption
+//!
+//! [`DafFile::doubles_native`] reinterprets `LTL-IEEE` on-disk bytes as
+//! native `f64` with no byte-swap, which is only correct on
+//! little-endian hosts. We currently fail to compile on big-endian
+//! targets rather than silently produce byte-reversed values. The
+//! supported targets (Linux/macOS/Windows on `x86_64` and `aarch64`)
+//! are all little-endian; adding big-endian support requires either a
+//! byte-swap path here or routing the hot paths back through the
+//! existing endian-agnostic [`DafFile::read_doubles`].
+
+#[cfg(not(target_endian = "little"))]
+compile_error!(
+    "spicekit currently requires a little-endian host (DafFile::doubles_native \
+     reinterprets LTL-IEEE bytes as native f64 with no byte-swap). The supported \
+     targets — Linux/macOS/Windows on x86_64 and aarch64 — are all little-endian. \
+     Adding big-endian support requires either a byte-swap path in doubles_native \
+     or routing SPK/PCK hot paths back through read_doubles (which uses \
+     f64::from_le_bytes and is endian-agnostic)."
+);
 
 use std::path::Path;
 use std::sync::Arc;
@@ -241,17 +262,22 @@ impl DafFile {
     /// evaluators: it does **no allocation** and **no per-double
     /// byte-decoding loop** — the bytes are reinterpreted in place.
     ///
-    /// Safety/correctness rests on three invariants enforced elsewhere:
-    /// 1. We rejected non-`LTL-IEEE` files at `from_mmap`, so the on-disk
-    ///    representation matches the native `f64` repr on every platform
-    ///    we support (LE-IEEE-754 on aarch64-apple-darwin, x86_64-*-*).
-    /// 2. DAF addresses are 1-indexed counts of 8-byte doubles; `mmap`
-    ///    returns a base pointer that is page-aligned (≥ 4096 B) so every
-    ///    DAF double address lands on an 8-byte boundary.
-    /// 3. The byte length is `(end_addr - start_addr + 1) * 8`, exactly
-    ///    a multiple of 8.
+    /// Correctness rests on four invariants:
+    /// 1. **Host endianness**: the host is little-endian, so the native
+    ///    `f64` byte order matches the on-disk LTL-IEEE byte order.
+    ///    Enforced at compile time by the module-level
+    ///    `compile_error!` above; big-endian builds fail to compile.
+    /// 2. **File endianness**: we rejected non-`LTL-IEEE` files at
+    ///    [`DafFile::from_mmap`], so on-disk bytes are LE IEEE-754
+    ///    f64.
+    /// 3. **Alignment**: DAF addresses are 1-indexed counts of 8-byte
+    ///    doubles; `mmap` returns a base pointer that is page-aligned
+    ///    (≥ 4096 B) so every DAF double address lands on an 8-byte
+    ///    boundary.
+    /// 4. **Length**: the byte length is `(end_addr - start_addr + 1) * 8`,
+    ///    exactly a multiple of 8.
     ///
-    /// `bytemuck::cast_slice` validates (2) and (3) at runtime, so this
+    /// `bytemuck::cast_slice` validates (3) and (4) at runtime, so this
     /// function is fully safe; on a malformed mmap it would panic before
     /// returning bad data.
     pub fn doubles_native(&self, start_addr: u32, end_addr: u32) -> Result<&[f64], DafError> {
