@@ -110,7 +110,7 @@ impl PckType2 {
         let idx = raw_idx.clamp(0, self.n_records as isize - 1) as usize;
         let rec_start = self.start_addr + (idx * self.rsize) as u32;
         let rec_end = rec_start + self.rsize as u32 - 1;
-        let rec = self.file.read_doubles(rec_start, rec_end)?;
+        let rec = self.file.doubles_native(rec_start, rec_end)?;
 
         let mid = rec[0];
         let radius = rec[1];

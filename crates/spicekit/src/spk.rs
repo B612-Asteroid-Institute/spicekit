@@ -116,7 +116,7 @@ impl SpkType2 {
         let idx = raw_idx.clamp(0, self.n_records as isize - 1) as usize;
         let rec_start = self.start_addr + (idx * self.rsize) as u32;
         let rec_end = rec_start + self.rsize as u32 - 1;
-        let rec = self.file.read_doubles(rec_start, rec_end)?;
+        let rec = self.file.doubles_native(rec_start, rec_end)?;
 
         let mid = rec[0];
         let radius = rec[1];
@@ -190,7 +190,7 @@ impl SpkType3 {
         let idx = raw_idx.clamp(0, self.n_records as isize - 1) as usize;
         let rec_start = self.start_addr + (idx * self.rsize) as u32;
         let rec_end = rec_start + self.rsize as u32 - 1;
-        let rec = self.file.read_doubles(rec_start, rec_end)?;
+        let rec = self.file.doubles_native(rec_start, rec_end)?;
 
         let mid = rec[0];
         let radius = rec[1];
@@ -283,11 +283,11 @@ impl SpkType9 {
     fn evaluate(&self, et: f64) -> Result<[f64; 6], SpkError> {
         let window = self.meta_degree + 1;
         let (i0, count) = pick_window(&self.file, self.epochs_start, self.n_states, window, et)?;
-        let epochs = self.file.read_doubles(
+        let epochs = self.file.doubles_native(
             self.epochs_start + i0 as u32,
             self.epochs_start + (i0 + count - 1) as u32,
         )?;
-        let states = self.file.read_doubles(
+        let states = self.file.doubles_native(
             self.states_start + (6 * i0) as u32,
             self.states_start + (6 * (i0 + count) - 1) as u32,
         )?;
@@ -341,11 +341,11 @@ impl SpkType13 {
             self.window_size,
             et,
         )?;
-        let epochs = self.file.read_doubles(
+        let epochs = self.file.doubles_native(
             self.epochs_start + i0 as u32,
             self.epochs_start + (i0 + count - 1) as u32,
         )?;
-        let states = self.file.read_doubles(
+        let states = self.file.doubles_native(
             self.states_start + (6 * i0) as u32,
             self.states_start + (6 * (i0 + count) - 1) as u32,
         )?;
@@ -386,7 +386,7 @@ fn pick_window(
     }
     let count = window.min(n_states);
     // Binary search for the greatest epoch <= et.
-    let epochs = file.read_doubles(epochs_start, epochs_start + n_states as u32 - 1)?;
+    let epochs = file.doubles_native(epochs_start, epochs_start + n_states as u32 - 1)?;
     let mut lo = 0usize;
     let mut hi = n_states;
     while lo < hi {

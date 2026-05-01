@@ -234,6 +234,31 @@ impl DafFile {
         Ok(out)
     }
 
+    /// Zero-copy view of a double range as a `&[f64]` slice into the
+    /// memory-mapped file.
+    ///
+    /// This is the hot-path accessor used by SPK/PCK segment
+    /// evaluators: it does **no allocation** and **no per-double
+    /// byte-decoding loop** — the bytes are reinterpreted in place.
+    ///
+    /// Safety/correctness rests on three invariants enforced elsewhere:
+    /// 1. We rejected non-`LTL-IEEE` files at `from_mmap`, so the on-disk
+    ///    representation matches the native `f64` repr on every platform
+    ///    we support (LE-IEEE-754 on aarch64-apple-darwin, x86_64-*-*).
+    /// 2. DAF addresses are 1-indexed counts of 8-byte doubles; `mmap`
+    ///    returns a base pointer that is page-aligned (≥ 4096 B) so every
+    ///    DAF double address lands on an 8-byte boundary.
+    /// 3. The byte length is `(end_addr - start_addr + 1) * 8`, exactly
+    ///    a multiple of 8.
+    ///
+    /// `bytemuck::cast_slice` validates (2) and (3) at runtime, so this
+    /// function is fully safe; on a malformed mmap it would panic before
+    /// returning bad data.
+    pub fn doubles_native(&self, start_addr: u32, end_addr: u32) -> Result<&[f64], DafError> {
+        let bytes = self.double_slice(start_addr, end_addr)?;
+        Ok(bytemuck::cast_slice(bytes))
+    }
+
     /// Zero-copy view of a double range as a &[u8] slice.
     pub fn double_slice(&self, start_addr: u32, end_addr: u32) -> Result<&[u8], DafError> {
         if start_addr == 0 || end_addr < start_addr {
