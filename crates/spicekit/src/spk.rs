@@ -130,12 +130,17 @@ impl SpkType2 {
         let yc = &rec[2 + n..2 + 2 * n];
         let zc = &rec[2 + 2 * n..2 + 3 * n];
 
-        let (x, vx) = cheby_val_and_deriv(xc, s);
-        let (y, vy) = cheby_val_and_deriv(yc, s);
-        let (z, vz) = cheby_val_and_deriv(zc, s);
+        let (pos, vel) = cheby3_val_and_deriv(xc, yc, zc, s);
         // Derivative is d/ds; chain rule to d/dt: ds/dt = 1/radius.
         let inv_r = 1.0 / radius;
-        Ok([x, y, z, vx * inv_r, vy * inv_r, vz * inv_r])
+        Ok([
+            pos[0],
+            pos[1],
+            pos[2],
+            vel[0] * inv_r,
+            vel[1] * inv_r,
+            vel[2] * inv_r,
+        ])
     }
 }
 
@@ -197,18 +202,20 @@ impl SpkType3 {
         let s = (et - mid) / radius;
         let n = self.n_coef;
         let xc = &rec[2..2 + n];
+        // SAFETY: zero-cost shadow guard so the slice constructions
+        // below match the validated record layout.
+        debug_assert_eq!(rec.len(), self.rsize);
         let yc = &rec[2 + n..2 + 2 * n];
         let zc = &rec[2 + 2 * n..2 + 3 * n];
         let vxc = &rec[2 + 3 * n..2 + 4 * n];
         let vyc = &rec[2 + 4 * n..2 + 5 * n];
         let vzc = &rec[2 + 5 * n..2 + 6 * n];
-        let (x, _) = cheby_val_and_deriv(xc, s);
-        let (y, _) = cheby_val_and_deriv(yc, s);
-        let (z, _) = cheby_val_and_deriv(zc, s);
-        let (vx, _) = cheby_val_and_deriv(vxc, s);
-        let (vy, _) = cheby_val_and_deriv(vyc, s);
-        let (vz, _) = cheby_val_and_deriv(vzc, s);
-        Ok([x, y, z, vx, vy, vz])
+        // Type 3 stores velocity as a separate Chebyshev series — no
+        // derivative needed for either evaluation. Two value-only
+        // 3-channel evaluations replace six scalar val-and-deriv calls.
+        let pos = cheby3_val_only(xc, yc, zc, s);
+        let vel = cheby3_val_only(vxc, vyc, vzc, s);
+        Ok([pos[0], pos[1], pos[2], vel[0], vel[1], vel[2]])
     }
 }
 
@@ -297,7 +304,7 @@ impl SpkType9 {
             for j in 0..count {
                 comp[j] = states[6 * j + k];
             }
-            out[k] = lagrange_eval(&epochs, &comp, et);
+            out[k] = lagrange_eval(epochs, &comp, et);
         }
         Ok(out)
     }
@@ -363,7 +370,7 @@ impl SpkType13 {
                 pos_vals[j] = states[6 * j + axis];
                 vel_vals[j] = states[6 * j + 3 + axis];
             }
-            let (p, v) = hermite_eval(&epochs, &pos_vals, &vel_vals, et);
+            let (p, v) = hermite_eval(epochs, &pos_vals, &vel_vals, et);
             out[axis] = p;
             out[3 + axis] = v;
         }
@@ -507,9 +514,14 @@ fn hermite_eval(xs: &[f64], ys: &[f64], dys: &[f64], x: f64) -> (f64, f64) {
 ///
 /// Returns `(f(s), f'(s))` where f = sum_{k=0}^{n-1} c[k] T_k(s) and the
 /// derivative is with respect to `s` (caller applies the chain-rule
-/// scaling). Uses the direct three-term recurrence; for typical SPK
-/// degrees (13 for DE440) it is both simpler and numerically on par
-/// with Clenshaw.
+/// scaling). Uses the direct three-term recurrence.
+///
+/// Kept as a single-channel reference implementation only; production
+/// callers in SPK/PCK Type 2 use the shared 3-channel evaluators
+/// ([`cheby3_val_and_deriv`] / [`cheby3_val_only`]). The parity tests
+/// in `cheby3_parity_tests` verify the 3-channel evaluators reproduce
+/// this scalar version bit-for-bit.
+#[cfg(test)]
 pub(crate) fn cheby_val_and_deriv(c: &[f64], s: f64) -> (f64, f64) {
     let n = c.len();
     if n == 0 {
@@ -535,6 +547,93 @@ pub(crate) fn cheby_val_and_deriv(c: &[f64], s: f64) -> (f64, f64) {
         dt_curr = dt_next;
     }
     (val, der)
+}
+
+/// Three-channel Chebyshev evaluation with shared basis-function
+/// recurrence. Equivalent to calling [`cheby_val_and_deriv`] three
+/// times on `(cx, cy, cz)` at the same `s`, but computes `T_k(s)` and
+/// `dT_k/ds` once per iteration and applies them to all three
+/// channels. The per-channel arithmetic order is identical to the
+/// scalar variant, so the output is bit-for-bit equivalent.
+///
+/// All three slices must have the same length (a Type 2/3 record
+/// invariant; debug-asserted).
+#[inline]
+pub(crate) fn cheby3_val_and_deriv(
+    cx: &[f64],
+    cy: &[f64],
+    cz: &[f64],
+    s: f64,
+) -> ([f64; 3], [f64; 3]) {
+    let n = cx.len();
+    debug_assert_eq!(cy.len(), n);
+    debug_assert_eq!(cz.len(), n);
+    if n == 0 {
+        return ([0.0; 3], [0.0; 3]);
+    }
+    if n == 1 {
+        return ([cx[0], cy[0], cz[0]], [0.0; 3]);
+    }
+    let mut t_prev = 1.0;
+    let mut t_curr = s;
+    let mut dt_prev = 0.0_f64;
+    let mut dt_curr = 1.0;
+    let mut val = [
+        cx[0] * t_prev + cx[1] * t_curr,
+        cy[0] * t_prev + cy[1] * t_curr,
+        cz[0] * t_prev + cz[1] * t_curr,
+    ];
+    let mut der = [cx[1] * dt_curr, cy[1] * dt_curr, cz[1] * dt_curr];
+    let two_s = 2.0 * s;
+    for k in 2..n {
+        let t_next = two_s * t_curr - t_prev;
+        let dt_next = 2.0 * t_curr + two_s * dt_curr - dt_prev;
+        val[0] += cx[k] * t_next;
+        val[1] += cy[k] * t_next;
+        val[2] += cz[k] * t_next;
+        der[0] += cx[k] * dt_next;
+        der[1] += cy[k] * dt_next;
+        der[2] += cz[k] * dt_next;
+        t_prev = t_curr;
+        t_curr = t_next;
+        dt_prev = dt_curr;
+        dt_curr = dt_next;
+    }
+    (val, der)
+}
+
+/// Three-channel Chebyshev value-only evaluation (no derivative).
+/// Used by SPK Type 3, which stores velocity as a separate Chebyshev
+/// series so the position-polynomial derivative is unused. Saves the
+/// `dT_n/ds` recurrence and one fma per iteration per channel.
+#[inline]
+pub(crate) fn cheby3_val_only(cx: &[f64], cy: &[f64], cz: &[f64], s: f64) -> [f64; 3] {
+    let n = cx.len();
+    debug_assert_eq!(cy.len(), n);
+    debug_assert_eq!(cz.len(), n);
+    if n == 0 {
+        return [0.0; 3];
+    }
+    if n == 1 {
+        return [cx[0], cy[0], cz[0]];
+    }
+    let mut t_prev = 1.0;
+    let mut t_curr = s;
+    let mut val = [
+        cx[0] * t_prev + cx[1] * t_curr,
+        cy[0] * t_prev + cy[1] * t_curr,
+        cz[0] * t_prev + cz[1] * t_curr,
+    ];
+    let two_s = 2.0 * s;
+    for k in 2..n {
+        let t_next = two_s * t_curr - t_prev;
+        val[0] += cx[k] * t_next;
+        val[1] += cy[k] * t_next;
+        val[2] += cz[k] * t_next;
+        t_prev = t_curr;
+        t_curr = t_next;
+    }
+    val
 }
 
 /// A loaded SPK file: DAF plus per-segment metadata and a
@@ -839,6 +938,89 @@ mod tests {
             (d_analytic - d_fd).abs() < 1e-6,
             "analytic={d_analytic} fd={d_fd}"
         );
+    }
+}
+
+#[cfg(test)]
+mod cheby3_parity_tests {
+    //! Pin down that the 3-axis shared evaluators produce bit-identical
+    //! output to the scalar `cheby_val_and_deriv` called once per axis.
+    //! Same per-channel arithmetic order, so equality must hold even at
+    //! `rtol=atol=0` on every f64 bit.
+    use super::{cheby3_val_and_deriv, cheby3_val_only, cheby_val_and_deriv};
+
+    fn coeffs(seed: u64, n: usize) -> Vec<f64> {
+        // Deterministic pseudo-random f64s in roughly [-1, 1] without
+        // pulling in a `rand` dep — sufficient to trip any FP reorder.
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        (0..n)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let bits = x >> 11;
+                (bits as f64) * (1.0 / (1_u64 << 53) as f64) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cheby3_val_and_deriv_matches_scalar_bit_for_bit() {
+        for &n in &[2usize, 3, 8, 11, 13, 14, 27] {
+            let cx = coeffs(0xA, n);
+            let cy = coeffs(0xB, n);
+            let cz = coeffs(0xC, n);
+            for &s in &[-1.0, -0.7, -0.123, 0.0, 0.25, 0.5, 0.999, 1.0] {
+                let (vx, dx) = cheby_val_and_deriv(&cx, s);
+                let (vy, dy) = cheby_val_and_deriv(&cy, s);
+                let (vz, dz) = cheby_val_and_deriv(&cz, s);
+                let (val, der) = cheby3_val_and_deriv(&cx, &cy, &cz, s);
+                assert_eq!(val[0].to_bits(), vx.to_bits(), "val.x n={n} s={s}");
+                assert_eq!(val[1].to_bits(), vy.to_bits(), "val.y n={n} s={s}");
+                assert_eq!(val[2].to_bits(), vz.to_bits(), "val.z n={n} s={s}");
+                assert_eq!(der[0].to_bits(), dx.to_bits(), "der.x n={n} s={s}");
+                assert_eq!(der[1].to_bits(), dy.to_bits(), "der.y n={n} s={s}");
+                assert_eq!(der[2].to_bits(), dz.to_bits(), "der.z n={n} s={s}");
+            }
+        }
+    }
+
+    #[test]
+    fn cheby3_val_only_matches_scalar_bit_for_bit() {
+        for &n in &[2usize, 3, 8, 11, 13, 14, 27] {
+            let cx = coeffs(0x1, n);
+            let cy = coeffs(0x2, n);
+            let cz = coeffs(0x3, n);
+            for &s in &[-1.0, -0.7, -0.123, 0.0, 0.25, 0.5, 0.999, 1.0] {
+                let (vx, _) = cheby_val_and_deriv(&cx, s);
+                let (vy, _) = cheby_val_and_deriv(&cy, s);
+                let (vz, _) = cheby_val_and_deriv(&cz, s);
+                let v3 = cheby3_val_only(&cx, &cy, &cz, s);
+                assert_eq!(v3[0].to_bits(), vx.to_bits(), "x n={n} s={s}");
+                assert_eq!(v3[1].to_bits(), vy.to_bits(), "y n={n} s={s}");
+                assert_eq!(v3[2].to_bits(), vz.to_bits(), "z n={n} s={s}");
+            }
+        }
+    }
+
+    #[test]
+    fn cheby3_handles_degenerate_lengths() {
+        // n=0 and n=1 short-circuit — must agree with three scalar calls.
+        let s = 0.3_f64;
+        let (val, der) = cheby3_val_and_deriv(&[], &[], &[], s);
+        assert_eq!(val, [0.0; 3]);
+        assert_eq!(der, [0.0; 3]);
+        let v3 = cheby3_val_only(&[], &[], &[], s);
+        assert_eq!(v3, [0.0; 3]);
+
+        let cx = [1.5];
+        let cy = [-0.25];
+        let cz = [42.0];
+        let (val, der) = cheby3_val_and_deriv(&cx, &cy, &cz, s);
+        assert_eq!(val, [1.5, -0.25, 42.0]);
+        assert_eq!(der, [0.0; 3]);
+        let v3 = cheby3_val_only(&cx, &cy, &cz, s);
+        assert_eq!(v3, [1.5, -0.25, 42.0]);
     }
 }
 

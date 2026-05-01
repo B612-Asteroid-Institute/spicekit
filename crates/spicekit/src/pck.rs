@@ -31,7 +31,7 @@ use std::path::Path;
 use thiserror::Error;
 
 use crate::daf::{DafError, DafFile};
-use crate::spk::cheby_val_and_deriv;
+use crate::spk::cheby3_val_and_deriv;
 
 #[derive(Debug, Error)]
 pub enum PckError {
@@ -124,12 +124,19 @@ impl PckType2 {
         let dec_c = &rec[2 + n..2 + 2 * n];
         let w_c = &rec[2 + 2 * n..2 + 3 * n];
 
-        let (ra, dra) = cheby_val_and_deriv(ra_c, s);
-        let (dec, ddec) = cheby_val_and_deriv(dec_c, s);
-        let (w, dw) = cheby_val_and_deriv(w_c, s);
-
+        // Three-channel evaluation with shared T_k(s) / dT_k/ds basis
+        // recurrence — mathematically equivalent to three independent
+        // calls but ~3x cheaper on the recurrence half of the work.
+        let (ang, dang) = cheby3_val_and_deriv(ra_c, dec_c, w_c, s);
         let inv_r = 1.0 / radius;
-        Ok([ra, dec, w, dra * inv_r, ddec * inv_r, dw * inv_r])
+        Ok([
+            ang[0],
+            ang[1],
+            ang[2],
+            dang[0] * inv_r,
+            dang[1] * inv_r,
+            dang[2] * inv_r,
+        ])
     }
 }
 
