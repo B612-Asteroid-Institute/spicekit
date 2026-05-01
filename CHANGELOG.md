@@ -54,6 +54,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   crates.io artifact; the Python crate's README badge is updated
   from `../../LICENSE` to `./LICENSE` so it resolves inside the
   PyPI sdist as well.
+- Public docstrings (the crate-level `lib.rs` and several module-
+  level docs in `daf.rs`, `pck.rs`, `spk_writer.rs`, and the
+  spicekit-py module docstring) no longer claim CSpice parity is
+  asserted in the Python test suite (it actually lives in the
+  sibling `spicekit-bench` crate) and no longer reference adam-core
+  by name as the originating consumer; they describe spicekit's
+  scope on its own terms instead.
+
+### Changed
+
+- `spicekit.NaifSpkWriter()` default `locifn` (the DAF "internal
+  name" header field) is now `"spicekit"` instead of `"adam-core"`.
+  Behavior change: SPK files written via `NaifSpkWriter()` with no
+  explicit `locifn` will have `"spicekit"` stamped in the header.
+  Callers that need the previous string can pass
+  `NaifSpkWriter(locifn="adam-core")` explicitly.
 
 ## [0.1.0] — 2026-04-21
 

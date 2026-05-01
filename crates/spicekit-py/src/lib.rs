@@ -170,7 +170,7 @@ struct NaifSpkWriter {
 #[pymethods]
 impl NaifSpkWriter {
     #[new]
-    #[pyo3(signature = (locifn = "adam-core"))]
+    #[pyo3(signature = (locifn = "spicekit"))]
     fn new(locifn: &str) -> Self {
         NaifSpkWriter {
             inner: SpkWriterRs::new_spk(locifn),
