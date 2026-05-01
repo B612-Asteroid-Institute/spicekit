@@ -15,3 +15,8 @@ build/
 *.so
 *.dylib
 *.pyd
+
+# Local-only working notes; root-anchored so we don't accidentally
+# exclude documentation/journal.md or similar nested files later.
+/journal.md
+/decisions.md
