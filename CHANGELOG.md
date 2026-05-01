@@ -43,6 +43,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `rustc-hash = "2.0"` (faster hash for `(i32, i32)` segment-index
   keys). Zero new `unsafe`.
 
+### Fixed
+
+- Bundle `LICENSE` and `LICENSE-NOTICES` inside both published crate
+  artifacts (`crates/spicekit/` and `crates/spicekit-py/`). Previously
+  these files lived only at the workspace root, so the
+  `cargo package` output and the maturin sdist did not include them
+  even though both READMEs reference them. The base crate's README
+  links (`./LICENSE`, `./LICENSE-NOTICES`) now resolve inside the
+  crates.io artifact; the Python crate's README badge is updated
+  from `../../LICENSE` to `./LICENSE` so it resolves inside the
+  PyPI sdist as well.
+
 ## [0.1.0] — 2026-04-21
 
 Initial public release.
