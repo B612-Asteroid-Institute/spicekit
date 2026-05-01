@@ -3,9 +3,10 @@
 //! Builds a complete DAF/SPK file in memory and serializes it atomically
 //! to disk, so there is no partial-file state visible to a concurrent
 //! reader (DAF is mmap-backed, so atomic rename is required). Supports
-//! SPK Type 3 (Chebyshev position + velocity) and Type 9 (Lagrange,
-//! unequal time steps) — the two types adam-core writes in
-//! `orbits/spice_kernel.py`.
+//! SPK Type 3 (Chebyshev position + velocity) and Type 9 (Lagrange
+//! interpolation of discrete states with unequal time steps) — the two
+//! output formats most commonly produced by orbit-determination and
+//! trajectory tooling that needs to round-trip kernels through CSpice.
 //!
 //! Layout produced (record numbers 1-indexed, 1024 bytes each):
 //!   rec 1   : file record (idword, nd=2, ni=6, fward=2, bward=2, LTL-IEEE)

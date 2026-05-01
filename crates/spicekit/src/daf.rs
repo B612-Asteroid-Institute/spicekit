@@ -1,8 +1,10 @@
 //! NAIF DAF (Double-precision Array File) container reader.
 //!
-//! All adam-core NAIF data — SPK, PCK, and CK — live inside DAF files. This
-//! module parses the file record and summary/name record chain, yielding
-//! typed `Summary` descriptors. Payload interpretation (e.g. SPK Type 2
+//! DAF is the shared on-disk container behind every binary SPICE
+//! kernel format — SPK, PCK, and CK — so this module is the entry
+//! point for the per-kernel-type parsers above it. It parses the
+//! file record and the summary/name record chain, yielding typed
+//! [`Summary`] descriptors; payload interpretation (e.g. SPK Type 2
 //! Chebyshev coefficients) is the caller's responsibility.
 //!
 //! Reference: NAIF "DAF Required Reading" (daf.req).
@@ -88,8 +90,9 @@ pub struct Summary {
 impl DafFile {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, DafError> {
         let file = std::fs::File::open(path)?;
-        // SAFETY: the mapped file is read-only; adam-core does not modify
-        // SPK/PCK kernels after they've been delivered to the NAIF package.
+        // SAFETY: the mapping is read-only; SPK/PCK kernels are
+        // immutable artifacts — NAIF distributes them as fixed-content
+        // releases and consumers must not modify them in place.
         let mmap = unsafe { Mmap::map(&file)? };
         Self::from_mmap(mmap)
     }

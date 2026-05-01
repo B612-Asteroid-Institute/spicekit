@@ -1,12 +1,15 @@
 //! Binary PCK (Planetary Constants Kernel) reader.
 //!
-//! Adam-core only needs time-varying planetary body orientations for the
-//! Earth-associated `ITRF93` frame. Binary PCK shares the DAF container
-//! with SPK, but the summary layout differs (NI=5 instead of 6, with
-//! `center` absent: segments describe a single body-fixed frame wrt a
-//! reference inertial frame). The payload is the standard Type 2
-//! Chebyshev record, but with 3 Euler-angle channels rather than 3
-//! position channels. The angles follow the NAIF 3-1-3 convention:
+//! This module reads time-varying planetary body orientations from
+//! binary PCKs. Scope is currently the Earth-associated `ITRF93` frame
+//! and any other body-fixed frames stored as PCK Type 2 Chebyshev
+//! Euler-angle records — the format used by NAIF's standard Earth EOP
+//! kernels. Binary PCK shares the DAF container with SPK, but the
+//! summary layout differs (NI=5 instead of 6, with `center` absent:
+//! segments describe a single body-fixed frame wrt a reference
+//! inertial frame). The payload is the standard Type 2 Chebyshev
+//! record, but with 3 Euler-angle channels rather than 3 position
+//! channels. The angles follow the NAIF 3-1-3 convention:
 //! `(t1, t2, t3)` such that `R_ref→body = Rz(t3) · Rx(t2) · Rz(t1)`.
 //! The `ref` frame is the segment's reference inertial frame — the
 //! standard Earth PCKs use `ECLIPJ2000` (NAIF frame ID 17), so
@@ -20,11 +23,12 @@
 //!
 //! Kernel precedence: three PCKs (`predict`, `historical`, `high_prec`)
 //! may cover overlapping epoch ranges. Last-loaded-wins matches
-//! CSPICE `furnsh` semantics: the caller is expected to load kernels in
-//! precedence order (least- to most-precise) and the file they opened
-//! most recently "wins" for overlapping coverage. This crate offers a
-//! per-file reader; multi-file composition is handled at the Python
-//! layer with a simple list-of-readers dispatcher.
+//! CSPICE `furnsh` semantics: the caller is expected to load kernels
+//! in precedence order (least- to most-precise) and the file they
+//! opened most recently "wins" for overlapping coverage. This crate
+//! offers a per-file reader; multi-file composition (a list-of-
+//! readers dispatcher) is the caller's responsibility — see the
+//! `spicekit-py` Python bindings for one such implementation.
 
 use std::path::Path;
 

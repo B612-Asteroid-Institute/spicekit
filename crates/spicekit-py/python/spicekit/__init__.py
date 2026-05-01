@@ -1,7 +1,6 @@
 """Python bindings for spicekit: pure-Rust NAIF kernel readers.
 
-Exposes the same surface that adam-core previously reached through its
-own PyO3 shim:
+The public surface mirrors the underlying Rust crate one-to-one:
 
 - ``NaifSpk``: DAF/SPK reader (state, state_batch, state_batch_in_frame, segments).
 - ``NaifPck``: DAF/PCK reader (euler_state, sxform, pxform, sxform_batch,
