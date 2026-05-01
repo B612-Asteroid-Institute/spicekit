@@ -15,13 +15,20 @@
 //! generate ourselves and the JWST Horizons fixture. Calling `evaluate`
 //! on an unsupported segment returns `SpkError::UnsupportedType`.
 
-use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rustc_hash::FxHashMap;
 use thiserror::Error;
 
 use crate::daf::{DafError, DafFile};
 use crate::frame::{rotate_state, NaifFrame};
+
+/// Sentinel value for [`SpkFile::last_segment`] meaning "cache empty".
+/// Chosen so that `cached < self.segments.len()` is `false` whenever
+/// the cache hasn't been populated yet (segments.len() < usize::MAX is
+/// always true).
+const MRU_EMPTY: usize = usize::MAX;
 
 #[derive(Debug, Error)]
 pub enum SpkError {
@@ -638,9 +645,25 @@ pub(crate) fn cheby3_val_only(cx: &[f64], cy: &[f64], cz: &[f64], s: f64) -> [f6
 
 /// A loaded SPK file: DAF plus per-segment metadata and a
 /// (target, center) index for O(1) segment lookup.
+///
+/// # Per-call hot path
+/// `state()` is hit hard during propagation: thousands to millions of
+/// calls with monotonically-increasing `et` against the same
+/// `(target, center)` pair. We optimize that pattern in two ways:
+/// 1. The `(target, center) -> Vec<segment_idx>` index uses `FxHashMap`
+///    rather than the std `HashMap`'s SipHash, since the key is two
+///    `i32`s and HashDoS is irrelevant for a SPK file we built.
+/// 2. A single `AtomicUsize` MRU cache (`last_segment`) memoizes the
+///    last successfully-evaluated segment index. On a propagation hot
+///    loop, ~99% of calls hit the cache and skip the index entirely.
+///    The cache is racy-but-safe: `segments` is immutable after
+///    construction so any index it stores is always valid; the
+///    per-call validation (`target`/`center`/`et` bounds) ensures we
+///    never use a stale entry incorrectly.
 pub struct SpkFile {
     segments: Vec<SpkSegment>,
-    index: HashMap<(i32, i32), Vec<usize>>,
+    index: FxHashMap<(i32, i32), Vec<usize>>,
+    last_segment: AtomicUsize,
 }
 
 impl SpkFile {
@@ -651,7 +674,7 @@ impl SpkFile {
 
     pub fn from_daf(daf: DafFile) -> Result<Self, SpkError> {
         let mut segments = Vec::new();
-        let mut index: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        let mut index: FxHashMap<(i32, i32), Vec<usize>> = FxHashMap::default();
         for summary in daf.summaries()? {
             if summary.doubles.len() < 2 || summary.integers.len() < 6 {
                 continue;
@@ -690,7 +713,11 @@ impl SpkFile {
                 payload,
             });
         }
-        Ok(SpkFile { segments, index })
+        Ok(SpkFile {
+            segments,
+            index,
+            last_segment: AtomicUsize::new(MRU_EMPTY),
+        })
     }
 
     pub fn segments(&self) -> &[SpkSegment] {
@@ -719,13 +746,37 @@ impl SpkFile {
     /// SSB) by recursively summing segments rooted at body 0 (SSB),
     /// then subtracts. All segments must share the same inertial frame;
     /// this holds for DE-series planetary ephemerides (all J2000).
+    #[inline]
     pub fn state(&self, target: i32, center: i32, et: f64) -> Result<[f64; 6], SpkError> {
         if target == center {
             return Ok([0.0; 6]);
         }
+
+        // MRU fast path: skip the index entirely when consecutive calls
+        // hit the same segment (the dominant pattern in propagation).
+        let cached = self.last_segment.load(Ordering::Relaxed);
+        if cached < self.segments.len() {
+            let seg = &self.segments[cached];
+            if seg.target == target
+                && seg.center == center
+                && et >= seg.start_et
+                && et <= seg.end_et
+            {
+                return Self::eval_segment(seg, et);
+            }
+        }
+
         if let Some(s) = self.try_direct(target, center, et)? {
             return Ok(s);
         }
+        self.state_via_ssb_chain(target, center, et)
+    }
+
+    /// SSB-chain fallback path. Marked `#[cold]` so LLVM keeps it off
+    /// the hot I-cache line for `state()`.
+    #[cold]
+    #[inline(never)]
+    fn state_via_ssb_chain(&self, target: i32, center: i32, et: f64) -> Result<[f64; 6], SpkError> {
         let t_ssb = self.state_wrt_ssb(target, et)?;
         let c_ssb = self.state_wrt_ssb(center, et)?;
         let mut out = [0.0_f64; 6];
@@ -737,12 +788,17 @@ impl SpkFile {
 
     /// Try to satisfy the pair from a single segment (or a single
     /// reverse segment by negation). Returns `Ok(None)` when neither
-    /// direction has coverage at `et`.
+    /// direction has coverage at `et`. Updates the MRU cache on a
+    /// forward-direction hit (reverse hits require state negation, so
+    /// they're not cached — the cache always points at a segment whose
+    /// `target`/`center` match the query exactly).
+    #[inline]
     fn try_direct(&self, target: i32, center: i32, et: f64) -> Result<Option<[f64; 6]>, SpkError> {
         if let Some(indices) = self.index.get(&(target, center)) {
             for &i in indices {
                 let seg = &self.segments[i];
                 if et >= seg.start_et && et <= seg.end_et {
+                    self.last_segment.store(i, Ordering::Relaxed);
                     return Ok(Some(Self::eval_segment(seg, et)?));
                 }
             }
@@ -762,6 +818,7 @@ impl SpkFile {
         Ok(None)
     }
 
+    #[inline]
     fn eval_segment(seg: &SpkSegment, et: f64) -> Result<[f64; 6], SpkError> {
         match &seg.payload {
             SpkPayload::Type2(t) => t.evaluate(et),
@@ -774,7 +831,10 @@ impl SpkFile {
 
     /// State of `body` wrt SSB (NAIF 0) at `et`, by walking
     /// `body -> next_center -> ... -> 0`. Detects cycles and bails if
-    /// the chain exceeds a conservative depth bound.
+    /// the chain exceeds a conservative depth bound. Cold path — only
+    /// reached when no direct segment covers the requested pair.
+    #[cold]
+    #[inline(never)]
     fn state_wrt_ssb(&self, body: i32, et: f64) -> Result<[f64; 6], SpkError> {
         if body == 0 {
             return Ok([0.0; 6]);
@@ -810,7 +870,9 @@ impl SpkFile {
     /// Pick one segment whose target is `body`, whose covers `et`, and
     /// whose center is closer to SSB (prefer center = 0 when available;
     /// otherwise the first matching segment). Returns the segment state
-    /// and the center body we advanced to.
+    /// and the center body we advanced to. Cold path.
+    #[cold]
+    #[inline(never)]
     fn step_toward_ssb(&self, body: i32, et: f64) -> Result<([f64; 6], i32), SpkError> {
         let mut preferred: Option<(&SpkSegment, [f64; 6])> = None;
         for seg in &self.segments {
