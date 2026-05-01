@@ -7,13 +7,22 @@
 //! past J2000.
 //!
 //! Supported data types:
-//! - Type 2: Chebyshev (position only). Velocity is the analytic
+//! - **Type 2** — Chebyshev (position only). Velocity is the analytic
 //!   derivative of the position polynomial (the standard CSPICE
-//!   definition). This covers DE440 and other planetary ephemerides.
+//!   definition). Covers DE440 and other planetary ephemerides.
+//! - **Type 3** — Chebyshev with separately-stored velocity
+//!   coefficients (no chain-rule derivative; velocity is its own
+//!   polynomial).
+//! - **Type 9** — Lagrange interpolation of discrete states with
+//!   unequal time steps; position and velocity components are
+//!   interpolated independently.
+//! - **Type 13** — Hermite interpolation of discrete states with
+//!   unequal time steps; position and velocity used as joint
+//!   constraints.
 //!
-//! Types 3, 9, and 13 will be added in a follow-up to cover SPKs we
-//! generate ourselves and the JWST Horizons fixture. Calling `evaluate`
-//! on an unsupported segment returns `SpkError::UnsupportedType`.
+//! Calling `evaluate` on an unsupported segment type returns
+//! `SpkError::UnsupportedType`. The companion [`crate::spk_writer`]
+//! crate produces Types 3 and 9.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -657,12 +666,29 @@ pub(crate) fn cheby3_val_only(cx: &[f64], cy: &[f64], cz: &[f64], s: f64) -> [f6
 ///    last successfully-evaluated segment index. On a propagation hot
 ///    loop, ~99% of calls hit the cache and skip the index entirely.
 ///    The cache is racy-but-safe: `segments` is immutable after
-///    construction so any index it stores is always valid; the
-///    per-call validation (`target`/`center`/`et` bounds) ensures we
-///    never use a stale entry incorrectly.
+///    construction so any index it stores is always valid.
+///
+/// # Cache safety vs overlapping segments
+/// The cache must never return a different segment than a fresh
+/// `try_direct` call would for the same `(target, center, et)`. When a
+/// `(target, center)` group has multiple segments whose ET coverage
+/// ranges overlap, the cached choice would depend on call history
+/// (whichever overlapping segment was most recently visited would
+/// "win" instead of the consistent insertion-order winner from
+/// `try_direct`). To prevent that, an internal per-segment
+/// `cacheable` flag is set only for segments whose ET range does
+/// **not** overlap any sibling in the same `(target, center)` group;
+/// only those segments are ever stored in `last_segment`, and the
+/// fast path also validates the flag. For DE-series ephemerides
+/// every key has exactly one segment, so all segments are cacheable
+/// and the cache fires unconditionally.
 pub struct SpkFile {
     segments: Vec<SpkSegment>,
     index: FxHashMap<(i32, i32), Vec<usize>>,
+    /// Per-segment flag: `true` iff this segment can be safely cached
+    /// in `last_segment` without making `state()` history-dependent.
+    /// See struct-level docs.
+    cacheable: Vec<bool>,
     last_segment: AtomicUsize,
 }
 
@@ -713,9 +739,35 @@ impl SpkFile {
                 payload,
             });
         }
+        // Compute per-segment cache safety: a segment is cacheable iff
+        // no sibling (same target/center) has an overlapping ET range.
+        // Without this, the MRU cache would make `state()`
+        // history-dependent for kernels with overlapping segments.
+        let mut cacheable = vec![true; segments.len()];
+        for indices in index.values() {
+            if indices.len() <= 1 {
+                continue;
+            }
+            for i in 0..indices.len() {
+                for j in (i + 1)..indices.len() {
+                    let a = &segments[indices[i]];
+                    let b = &segments[indices[j]];
+                    // Two closed intervals [a.start, a.end] and
+                    // [b.start, b.end] overlap iff each contains the
+                    // other's lower bound (or equivalently:
+                    // a.start <= b.end && b.start <= a.end).
+                    if a.start_et <= b.end_et && b.start_et <= a.end_et {
+                        cacheable[indices[i]] = false;
+                        cacheable[indices[j]] = false;
+                    }
+                }
+            }
+        }
+
         Ok(SpkFile {
             segments,
             index,
+            cacheable,
             last_segment: AtomicUsize::new(MRU_EMPTY),
         })
     }
@@ -754,8 +806,11 @@ impl SpkFile {
 
         // MRU fast path: skip the index entirely when consecutive calls
         // hit the same segment (the dominant pattern in propagation).
+        // The `cacheable[cached]` gate is what guarantees the cache can
+        // never return a different segment than `try_direct` would for
+        // the same `(target, center, et)` (see struct docs).
         let cached = self.last_segment.load(Ordering::Relaxed);
-        if cached < self.segments.len() {
+        if cached < self.segments.len() && self.cacheable[cached] {
             let seg = &self.segments[cached];
             if seg.target == target
                 && seg.center == center
@@ -798,7 +853,9 @@ impl SpkFile {
             for &i in indices {
                 let seg = &self.segments[i];
                 if et >= seg.start_et && et <= seg.end_et {
-                    self.last_segment.store(i, Ordering::Relaxed);
+                    if self.cacheable[i] {
+                        self.last_segment.store(i, Ordering::Relaxed);
+                    }
                     return Ok(Some(Self::eval_segment(seg, et)?));
                 }
             }

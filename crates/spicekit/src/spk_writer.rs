@@ -580,6 +580,87 @@ mod tests {
         assert!((st[5] + 0.2).abs() < 1e-14);
     }
 
+    /// Regression test for the MRU segment cache: when two segments
+    /// for the same `(target, center)` have overlapping ET coverage,
+    /// queries in any order must return the same answer as a fresh
+    /// (cache-cold) reader. Prior to the `cacheable` flag, querying
+    /// the second segment's exclusive range would cache it, then a
+    /// query in the overlap region would incorrectly return the
+    /// second segment's value instead of the first-loaded one that
+    /// `try_direct` deterministically picks.
+    #[test]
+    fn overlapping_segments_do_not_corrupt_mru_cache() {
+        // Segment A covers ET [0, 9], encodes x = 100 + t.
+        // Segment B covers ET [5, 14], encodes x = 200 + t.
+        // Overlap region: ET [5, 9]. First-loaded (A) deterministically
+        // wins in `try_direct`, so any query in the overlap must
+        // return A's value (~ 100 + et) regardless of call history.
+        fn linear_seg(target: i32, start: f64, end: f64, x_offset: f64) -> Type9Segment {
+            let n = (end as usize) - (start as usize) + 1;
+            let epochs: Vec<f64> = (0..n).map(|i| start + i as f64).collect();
+            let states: Vec<f64> = epochs
+                .iter()
+                .flat_map(|&t| [x_offset + t, 0.0, 0.0, 1.0, 0.0, 0.0].into_iter())
+                .collect();
+            Type9Segment {
+                target,
+                center: 0,
+                frame_id: 1,
+                start_et: start,
+                end_et: end,
+                segment_id: format!("seg_{}_{}", target, x_offset as i64),
+                degree: 1,
+                states,
+                epochs,
+            }
+        }
+
+        let mut w = SpkWriter::new_spk("overlap-mru");
+        w.add_type9(linear_seg(42, 0.0, 9.0, 100.0)).unwrap(); // A loaded first
+        w.add_type9(linear_seg(42, 5.0, 14.0, 200.0)).unwrap(); // B loaded second
+        let f = tmp_path();
+        w.write(f.path()).unwrap();
+
+        // Query order 1: cache cold, hit overlap directly.
+        let spk = SpkFile::open(f.path()).unwrap();
+        let cold = spk.state(42, 0, 7.0).unwrap();
+        assert!(
+            (cold[0] - 107.0).abs() < 1e-12,
+            "cold overlap query returned {} (expected ~107 from segment A)",
+            cold[0]
+        );
+
+        // Query order 2: visit B's exclusive range first (would have
+        // populated MRU cache with B's index pre-fix), then overlap.
+        // Both queries must remain consistent with a cold reader.
+        let spk = SpkFile::open(f.path()).unwrap();
+        let only_b = spk.state(42, 0, 12.0).unwrap();
+        assert!(
+            (only_b[0] - 212.0).abs() < 1e-12,
+            "B-exclusive query returned {} (expected ~212)",
+            only_b[0]
+        );
+        let after_b = spk.state(42, 0, 7.0).unwrap();
+        assert!(
+            (after_b[0] - 107.0).abs() < 1e-12,
+            "overlap-after-B returned {} (expected ~107 from A; cache leaked B)",
+            after_b[0]
+        );
+
+        // Query order 3: visit overlap, then B-exclusive, then
+        // overlap again. All overlap queries must return A.
+        let spk = SpkFile::open(f.path()).unwrap();
+        let r1 = spk.state(42, 0, 7.0).unwrap();
+        let r2 = spk.state(42, 0, 12.0).unwrap();
+        let r3 = spk.state(42, 0, 7.0).unwrap();
+        assert!((r1[0] - 107.0).abs() < 1e-12);
+        assert!((r2[0] - 212.0).abs() < 1e-12);
+        assert!((r3[0] - 107.0).abs() < 1e-12);
+        // And the two overlap queries must be bit-equal regardless of
+        // intervening B query.
+        assert_eq!(r1[0].to_bits(), r3[0].to_bits());
+    }
+
     #[test]
     fn multiple_segments_in_one_file() {
         let mut w = SpkWriter::new_spk("multi");

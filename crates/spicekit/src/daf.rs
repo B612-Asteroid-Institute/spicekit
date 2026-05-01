@@ -268,8 +268,8 @@ impl DafFile {
     ///    Enforced at compile time by the module-level
     ///    `compile_error!` above; big-endian builds fail to compile.
     /// 2. **File endianness**: we rejected non-`LTL-IEEE` files at
-    ///    [`DafFile::from_mmap`], so on-disk bytes are LE IEEE-754
-    ///    f64.
+    ///    [`DafFile::open`] (via the private `from_mmap` helper), so
+    ///    on-disk bytes are LE IEEE-754 f64.
     /// 3. **Alignment**: DAF addresses are 1-indexed counts of 8-byte
     ///    doubles; `mmap` returns a base pointer that is page-aligned
     ///    (≥ 4096 B) so every DAF double address lands on an 8-byte
