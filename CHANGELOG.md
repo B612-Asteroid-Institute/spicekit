@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-02
+
 ### Changed
 
 - **SPK/PCK Type 2/3/9/13 hot path** rewritten for ~4.8× lower per-call
@@ -97,5 +99,6 @@ Initial public release.
   CSpice numerically and for `bodc2n` across all 539 unique built-in
   codes.
 
-[Unreleased]: https://github.com/B612-Asteroid-Institute/spicekit/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/B612-Asteroid-Institute/spicekit/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/B612-Asteroid-Institute/spicekit/releases/tag/v0.2.0
 [0.1.0]: https://github.com/B612-Asteroid-Institute/spicekit/releases/tag/v0.1.0
