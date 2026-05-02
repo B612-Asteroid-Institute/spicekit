@@ -1,11 +1,34 @@
 //! NAIF DAF (Double-precision Array File) container reader.
 //!
-//! All adam-core NAIF data — SPK, PCK, and CK — live inside DAF files. This
-//! module parses the file record and summary/name record chain, yielding
-//! typed `Summary` descriptors. Payload interpretation (e.g. SPK Type 2
+//! DAF is the shared on-disk container behind every binary SPICE
+//! kernel format — SPK, PCK, and CK — so this module is the entry
+//! point for the per-kernel-type parsers above it. It parses the
+//! file record and the summary/name record chain, yielding typed
+//! [`Summary`] descriptors; payload interpretation (e.g. SPK Type 2
 //! Chebyshev coefficients) is the caller's responsibility.
 //!
 //! Reference: NAIF "DAF Required Reading" (daf.req).
+//!
+//! # Host-endianness assumption
+//!
+//! [`DafFile::doubles_native`] reinterprets `LTL-IEEE` on-disk bytes as
+//! native `f64` with no byte-swap, which is only correct on
+//! little-endian hosts. We currently fail to compile on big-endian
+//! targets rather than silently produce byte-reversed values. The
+//! supported targets (Linux/macOS/Windows on `x86_64` and `aarch64`)
+//! are all little-endian; adding big-endian support requires either a
+//! byte-swap path here or routing the hot paths back through the
+//! existing endian-agnostic [`DafFile::read_doubles`].
+
+#[cfg(not(target_endian = "little"))]
+compile_error!(
+    "spicekit currently requires a little-endian host (DafFile::doubles_native \
+     reinterprets LTL-IEEE bytes as native f64 with no byte-swap). The supported \
+     targets — Linux/macOS/Windows on x86_64 and aarch64 — are all little-endian. \
+     Adding big-endian support requires either a byte-swap path in doubles_native \
+     or routing SPK/PCK hot paths back through read_doubles (which uses \
+     f64::from_le_bytes and is endian-agnostic)."
+);
 
 use std::path::Path;
 use std::sync::Arc;
@@ -67,8 +90,9 @@ pub struct Summary {
 impl DafFile {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, DafError> {
         let file = std::fs::File::open(path)?;
-        // SAFETY: the mapped file is read-only; adam-core does not modify
-        // SPK/PCK kernels after they've been delivered to the NAIF package.
+        // SAFETY: the mapping is read-only; SPK/PCK kernels are
+        // immutable artifacts — NAIF distributes them as fixed-content
+        // releases and consumers must not modify them in place.
         let mmap = unsafe { Mmap::map(&file)? };
         Self::from_mmap(mmap)
     }
@@ -232,6 +256,36 @@ impl DafFile {
             ));
         }
         Ok(out)
+    }
+
+    /// Zero-copy view of a double range as a `&[f64]` slice into the
+    /// memory-mapped file.
+    ///
+    /// This is the hot-path accessor used by SPK/PCK segment
+    /// evaluators: it does **no allocation** and **no per-double
+    /// byte-decoding loop** — the bytes are reinterpreted in place.
+    ///
+    /// Correctness rests on four invariants:
+    /// 1. **Host endianness**: the host is little-endian, so the native
+    ///    `f64` byte order matches the on-disk LTL-IEEE byte order.
+    ///    Enforced at compile time by the module-level
+    ///    `compile_error!` above; big-endian builds fail to compile.
+    /// 2. **File endianness**: we rejected non-`LTL-IEEE` files at
+    ///    [`DafFile::open`] (via the private `from_mmap` helper), so
+    ///    on-disk bytes are LE IEEE-754 f64.
+    /// 3. **Alignment**: DAF addresses are 1-indexed counts of 8-byte
+    ///    doubles; `mmap` returns a base pointer that is page-aligned
+    ///    (≥ 4096 B) so every DAF double address lands on an 8-byte
+    ///    boundary.
+    /// 4. **Length**: the byte length is `(end_addr - start_addr + 1) * 8`,
+    ///    exactly a multiple of 8.
+    ///
+    /// `bytemuck::cast_slice` validates (3) and (4) at runtime, so this
+    /// function is fully safe; on a malformed mmap it would panic before
+    /// returning bad data.
+    pub fn doubles_native(&self, start_addr: u32, end_addr: u32) -> Result<&[f64], DafError> {
+        let bytes = self.double_slice(start_addr, end_addr)?;
+        Ok(bytemuck::cast_slice(bytes))
     }
 
     /// Zero-copy view of a double range as a &[u8] slice.

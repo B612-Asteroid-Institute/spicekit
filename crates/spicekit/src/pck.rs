@@ -1,12 +1,15 @@
 //! Binary PCK (Planetary Constants Kernel) reader.
 //!
-//! Adam-core only needs time-varying planetary body orientations for the
-//! Earth-associated `ITRF93` frame. Binary PCK shares the DAF container
-//! with SPK, but the summary layout differs (NI=5 instead of 6, with
-//! `center` absent: segments describe a single body-fixed frame wrt a
-//! reference inertial frame). The payload is the standard Type 2
-//! Chebyshev record, but with 3 Euler-angle channels rather than 3
-//! position channels. The angles follow the NAIF 3-1-3 convention:
+//! This module reads time-varying planetary body orientations from
+//! binary PCKs. Scope is currently the Earth-associated `ITRF93` frame
+//! and any other body-fixed frames stored as PCK Type 2 Chebyshev
+//! Euler-angle records — the format used by NAIF's standard Earth EOP
+//! kernels. Binary PCK shares the DAF container with SPK, but the
+//! summary layout differs (NI=5 instead of 6, with `center` absent:
+//! segments describe a single body-fixed frame wrt a reference
+//! inertial frame). The payload is the standard Type 2 Chebyshev
+//! record, but with 3 Euler-angle channels rather than 3 position
+//! channels. The angles follow the NAIF 3-1-3 convention:
 //! `(t1, t2, t3)` such that `R_ref→body = Rz(t3) · Rx(t2) · Rz(t1)`.
 //! The `ref` frame is the segment's reference inertial frame — the
 //! standard Earth PCKs use `ECLIPJ2000` (NAIF frame ID 17), so
@@ -20,18 +23,19 @@
 //!
 //! Kernel precedence: three PCKs (`predict`, `historical`, `high_prec`)
 //! may cover overlapping epoch ranges. Last-loaded-wins matches
-//! CSPICE `furnsh` semantics: the caller is expected to load kernels in
-//! precedence order (least- to most-precise) and the file they opened
-//! most recently "wins" for overlapping coverage. This crate offers a
-//! per-file reader; multi-file composition is handled at the Python
-//! layer with a simple list-of-readers dispatcher.
+//! CSPICE `furnsh` semantics: the caller is expected to load kernels
+//! in precedence order (least- to most-precise) and the file they
+//! opened most recently "wins" for overlapping coverage. This crate
+//! offers a per-file reader; multi-file composition (a list-of-
+//! readers dispatcher) is the caller's responsibility — see the
+//! `spicekit-py` Python bindings for one such implementation.
 
 use std::path::Path;
 
 use thiserror::Error;
 
 use crate::daf::{DafError, DafFile};
-use crate::spk::cheby_val_and_deriv;
+use crate::spk::cheby3_val_and_deriv;
 
 #[derive(Debug, Error)]
 pub enum PckError {
@@ -110,7 +114,7 @@ impl PckType2 {
         let idx = raw_idx.clamp(0, self.n_records as isize - 1) as usize;
         let rec_start = self.start_addr + (idx * self.rsize) as u32;
         let rec_end = rec_start + self.rsize as u32 - 1;
-        let rec = self.file.read_doubles(rec_start, rec_end)?;
+        let rec = self.file.doubles_native(rec_start, rec_end)?;
 
         let mid = rec[0];
         let radius = rec[1];
@@ -124,12 +128,19 @@ impl PckType2 {
         let dec_c = &rec[2 + n..2 + 2 * n];
         let w_c = &rec[2 + 2 * n..2 + 3 * n];
 
-        let (ra, dra) = cheby_val_and_deriv(ra_c, s);
-        let (dec, ddec) = cheby_val_and_deriv(dec_c, s);
-        let (w, dw) = cheby_val_and_deriv(w_c, s);
-
+        // Three-channel evaluation with shared T_k(s) / dT_k/ds basis
+        // recurrence — mathematically equivalent to three independent
+        // calls but ~3x cheaper on the recurrence half of the work.
+        let (ang, dang) = cheby3_val_and_deriv(ra_c, dec_c, w_c, s);
         let inv_r = 1.0 / radius;
-        Ok([ra, dec, w, dra * inv_r, ddec * inv_r, dw * inv_r])
+        Ok([
+            ang[0],
+            ang[1],
+            ang[2],
+            dang[0] * inv_r,
+            dang[1] * inv_r,
+            dang[2] * inv_r,
+        ])
     }
 }
 

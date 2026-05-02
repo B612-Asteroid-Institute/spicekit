@@ -170,7 +170,7 @@ struct NaifSpkWriter {
 #[pymethods]
 impl NaifSpkWriter {
     #[new]
-    #[pyo3(signature = (locifn = "adam-core"))]
+    #[pyo3(signature = (locifn = "spicekit"))]
     fn new(locifn: &str) -> Self {
         NaifSpkWriter {
             inner: SpkWriterRs::new_spk(locifn),
@@ -296,8 +296,10 @@ fn pck_err_to_py(err: PckError) -> PyErr {
     PyRuntimeError::new_err(format!("{err}"))
 }
 
-/// Numeric body-frame code for a NAIF name. We only recognize the
-/// frames adam-core actually uses.
+/// Numeric body-frame code for a NAIF name. spicekit currently
+/// recognizes the small set of frames its readers can evaluate
+/// (J2000, ECLIPJ2000, ITRF93); other names are rejected as
+/// unsupported.
 fn body_frame_code(name: &str) -> PyResult<i32> {
     match name {
         "ITRF93" => Ok(3000),

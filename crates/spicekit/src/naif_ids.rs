@@ -12,7 +12,7 @@
 //! per-backend body-name registry, which takes precedence over this
 //! table (last-loaded-wins, matching CSpice).
 //!
-//! Reference: https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/naif_ids.html
+//! Reference: <https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/naif_ids.html>
 
 use std::collections::HashMap;
 use std::sync::OnceLock;

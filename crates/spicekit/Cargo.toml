@@ -15,8 +15,10 @@ categories = ["science", "aerospace", "parser-implementations"]
 path = "src/lib.rs"
 
 [dependencies]
+bytemuck = "1.16"
 memmap2 = "0.9"
 rayon = "1.11"
+rustc-hash = "2.0"
 thiserror = "2.0"
 
 [dev-dependencies]

@@ -7,21 +7,37 @@
 //! past J2000.
 //!
 //! Supported data types:
-//! - Type 2: Chebyshev (position only). Velocity is the analytic
+//! - **Type 2** — Chebyshev (position only). Velocity is the analytic
 //!   derivative of the position polynomial (the standard CSPICE
-//!   definition). This covers DE440 and other planetary ephemerides.
+//!   definition). Covers DE440 and other planetary ephemerides.
+//! - **Type 3** — Chebyshev with separately-stored velocity
+//!   coefficients (no chain-rule derivative; velocity is its own
+//!   polynomial).
+//! - **Type 9** — Lagrange interpolation of discrete states with
+//!   unequal time steps; position and velocity components are
+//!   interpolated independently.
+//! - **Type 13** — Hermite interpolation of discrete states with
+//!   unequal time steps; position and velocity used as joint
+//!   constraints.
 //!
-//! Types 3, 9, and 13 will be added in a follow-up to cover SPKs we
-//! generate ourselves and the JWST Horizons fixture. Calling `evaluate`
-//! on an unsupported segment returns `SpkError::UnsupportedType`.
+//! Calling `evaluate` on an unsupported segment type returns
+//! `SpkError::UnsupportedType`. The companion [`crate::spk_writer`]
+//! crate produces Types 3 and 9.
 
-use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rustc_hash::FxHashMap;
 use thiserror::Error;
 
 use crate::daf::{DafError, DafFile};
 use crate::frame::{rotate_state, NaifFrame};
+
+/// Sentinel value for [`SpkFile::last_segment`] meaning "cache empty".
+/// Chosen so that `cached < self.segments.len()` is `false` whenever
+/// the cache hasn't been populated yet (segments.len() < usize::MAX is
+/// always true).
+const MRU_EMPTY: usize = usize::MAX;
 
 #[derive(Debug, Error)]
 pub enum SpkError {
@@ -116,7 +132,7 @@ impl SpkType2 {
         let idx = raw_idx.clamp(0, self.n_records as isize - 1) as usize;
         let rec_start = self.start_addr + (idx * self.rsize) as u32;
         let rec_end = rec_start + self.rsize as u32 - 1;
-        let rec = self.file.read_doubles(rec_start, rec_end)?;
+        let rec = self.file.doubles_native(rec_start, rec_end)?;
 
         let mid = rec[0];
         let radius = rec[1];
@@ -130,12 +146,17 @@ impl SpkType2 {
         let yc = &rec[2 + n..2 + 2 * n];
         let zc = &rec[2 + 2 * n..2 + 3 * n];
 
-        let (x, vx) = cheby_val_and_deriv(xc, s);
-        let (y, vy) = cheby_val_and_deriv(yc, s);
-        let (z, vz) = cheby_val_and_deriv(zc, s);
+        let (pos, vel) = cheby3_val_and_deriv(xc, yc, zc, s);
         // Derivative is d/ds; chain rule to d/dt: ds/dt = 1/radius.
         let inv_r = 1.0 / radius;
-        Ok([x, y, z, vx * inv_r, vy * inv_r, vz * inv_r])
+        Ok([
+            pos[0],
+            pos[1],
+            pos[2],
+            vel[0] * inv_r,
+            vel[1] * inv_r,
+            vel[2] * inv_r,
+        ])
     }
 }
 
@@ -190,25 +211,27 @@ impl SpkType3 {
         let idx = raw_idx.clamp(0, self.n_records as isize - 1) as usize;
         let rec_start = self.start_addr + (idx * self.rsize) as u32;
         let rec_end = rec_start + self.rsize as u32 - 1;
-        let rec = self.file.read_doubles(rec_start, rec_end)?;
+        let rec = self.file.doubles_native(rec_start, rec_end)?;
 
         let mid = rec[0];
         let radius = rec[1];
         let s = (et - mid) / radius;
         let n = self.n_coef;
         let xc = &rec[2..2 + n];
+        // SAFETY: zero-cost shadow guard so the slice constructions
+        // below match the validated record layout.
+        debug_assert_eq!(rec.len(), self.rsize);
         let yc = &rec[2 + n..2 + 2 * n];
         let zc = &rec[2 + 2 * n..2 + 3 * n];
         let vxc = &rec[2 + 3 * n..2 + 4 * n];
         let vyc = &rec[2 + 4 * n..2 + 5 * n];
         let vzc = &rec[2 + 5 * n..2 + 6 * n];
-        let (x, _) = cheby_val_and_deriv(xc, s);
-        let (y, _) = cheby_val_and_deriv(yc, s);
-        let (z, _) = cheby_val_and_deriv(zc, s);
-        let (vx, _) = cheby_val_and_deriv(vxc, s);
-        let (vy, _) = cheby_val_and_deriv(vyc, s);
-        let (vz, _) = cheby_val_and_deriv(vzc, s);
-        Ok([x, y, z, vx, vy, vz])
+        // Type 3 stores velocity as a separate Chebyshev series — no
+        // derivative needed for either evaluation. Two value-only
+        // 3-channel evaluations replace six scalar val-and-deriv calls.
+        let pos = cheby3_val_only(xc, yc, zc, s);
+        let vel = cheby3_val_only(vxc, vyc, vzc, s);
+        Ok([pos[0], pos[1], pos[2], vel[0], vel[1], vel[2]])
     }
 }
 
@@ -283,11 +306,11 @@ impl SpkType9 {
     fn evaluate(&self, et: f64) -> Result<[f64; 6], SpkError> {
         let window = self.meta_degree + 1;
         let (i0, count) = pick_window(&self.file, self.epochs_start, self.n_states, window, et)?;
-        let epochs = self.file.read_doubles(
+        let epochs = self.file.doubles_native(
             self.epochs_start + i0 as u32,
             self.epochs_start + (i0 + count - 1) as u32,
         )?;
-        let states = self.file.read_doubles(
+        let states = self.file.doubles_native(
             self.states_start + (6 * i0) as u32,
             self.states_start + (6 * (i0 + count) - 1) as u32,
         )?;
@@ -297,7 +320,7 @@ impl SpkType9 {
             for j in 0..count {
                 comp[j] = states[6 * j + k];
             }
-            out[k] = lagrange_eval(&epochs, &comp, et);
+            out[k] = lagrange_eval(epochs, &comp, et);
         }
         Ok(out)
     }
@@ -341,11 +364,11 @@ impl SpkType13 {
             self.window_size,
             et,
         )?;
-        let epochs = self.file.read_doubles(
+        let epochs = self.file.doubles_native(
             self.epochs_start + i0 as u32,
             self.epochs_start + (i0 + count - 1) as u32,
         )?;
-        let states = self.file.read_doubles(
+        let states = self.file.doubles_native(
             self.states_start + (6 * i0) as u32,
             self.states_start + (6 * (i0 + count) - 1) as u32,
         )?;
@@ -363,7 +386,7 @@ impl SpkType13 {
                 pos_vals[j] = states[6 * j + axis];
                 vel_vals[j] = states[6 * j + 3 + axis];
             }
-            let (p, v) = hermite_eval(&epochs, &pos_vals, &vel_vals, et);
+            let (p, v) = hermite_eval(epochs, &pos_vals, &vel_vals, et);
             out[axis] = p;
             out[3 + axis] = v;
         }
@@ -386,7 +409,7 @@ fn pick_window(
     }
     let count = window.min(n_states);
     // Binary search for the greatest epoch <= et.
-    let epochs = file.read_doubles(epochs_start, epochs_start + n_states as u32 - 1)?;
+    let epochs = file.doubles_native(epochs_start, epochs_start + n_states as u32 - 1)?;
     let mut lo = 0usize;
     let mut hi = n_states;
     while lo < hi {
@@ -507,9 +530,14 @@ fn hermite_eval(xs: &[f64], ys: &[f64], dys: &[f64], x: f64) -> (f64, f64) {
 ///
 /// Returns `(f(s), f'(s))` where f = sum_{k=0}^{n-1} c[k] T_k(s) and the
 /// derivative is with respect to `s` (caller applies the chain-rule
-/// scaling). Uses the direct three-term recurrence; for typical SPK
-/// degrees (13 for DE440) it is both simpler and numerically on par
-/// with Clenshaw.
+/// scaling). Uses the direct three-term recurrence.
+///
+/// Kept as a single-channel reference implementation only; production
+/// callers in SPK/PCK Type 2 use the shared 3-channel evaluators
+/// ([`cheby3_val_and_deriv`] / [`cheby3_val_only`]). The parity tests
+/// in `cheby3_parity_tests` verify the 3-channel evaluators reproduce
+/// this scalar version bit-for-bit.
+#[cfg(test)]
 pub(crate) fn cheby_val_and_deriv(c: &[f64], s: f64) -> (f64, f64) {
     let n = c.len();
     if n == 0 {
@@ -537,11 +565,131 @@ pub(crate) fn cheby_val_and_deriv(c: &[f64], s: f64) -> (f64, f64) {
     (val, der)
 }
 
+/// Three-channel Chebyshev evaluation with shared basis-function
+/// recurrence. Equivalent to calling [`cheby_val_and_deriv`] three
+/// times on `(cx, cy, cz)` at the same `s`, but computes `T_k(s)` and
+/// `dT_k/ds` once per iteration and applies them to all three
+/// channels. The per-channel arithmetic order is identical to the
+/// scalar variant, so the output is bit-for-bit equivalent.
+///
+/// All three slices must have the same length (a Type 2/3 record
+/// invariant; debug-asserted).
+#[inline]
+pub(crate) fn cheby3_val_and_deriv(
+    cx: &[f64],
+    cy: &[f64],
+    cz: &[f64],
+    s: f64,
+) -> ([f64; 3], [f64; 3]) {
+    let n = cx.len();
+    debug_assert_eq!(cy.len(), n);
+    debug_assert_eq!(cz.len(), n);
+    if n == 0 {
+        return ([0.0; 3], [0.0; 3]);
+    }
+    if n == 1 {
+        return ([cx[0], cy[0], cz[0]], [0.0; 3]);
+    }
+    let mut t_prev = 1.0;
+    let mut t_curr = s;
+    let mut dt_prev = 0.0_f64;
+    let mut dt_curr = 1.0;
+    let mut val = [
+        cx[0] * t_prev + cx[1] * t_curr,
+        cy[0] * t_prev + cy[1] * t_curr,
+        cz[0] * t_prev + cz[1] * t_curr,
+    ];
+    let mut der = [cx[1] * dt_curr, cy[1] * dt_curr, cz[1] * dt_curr];
+    let two_s = 2.0 * s;
+    for k in 2..n {
+        let t_next = two_s * t_curr - t_prev;
+        let dt_next = 2.0 * t_curr + two_s * dt_curr - dt_prev;
+        val[0] += cx[k] * t_next;
+        val[1] += cy[k] * t_next;
+        val[2] += cz[k] * t_next;
+        der[0] += cx[k] * dt_next;
+        der[1] += cy[k] * dt_next;
+        der[2] += cz[k] * dt_next;
+        t_prev = t_curr;
+        t_curr = t_next;
+        dt_prev = dt_curr;
+        dt_curr = dt_next;
+    }
+    (val, der)
+}
+
+/// Three-channel Chebyshev value-only evaluation (no derivative).
+/// Used by SPK Type 3, which stores velocity as a separate Chebyshev
+/// series so the position-polynomial derivative is unused. Saves the
+/// `dT_n/ds` recurrence and one fma per iteration per channel.
+#[inline]
+pub(crate) fn cheby3_val_only(cx: &[f64], cy: &[f64], cz: &[f64], s: f64) -> [f64; 3] {
+    let n = cx.len();
+    debug_assert_eq!(cy.len(), n);
+    debug_assert_eq!(cz.len(), n);
+    if n == 0 {
+        return [0.0; 3];
+    }
+    if n == 1 {
+        return [cx[0], cy[0], cz[0]];
+    }
+    let mut t_prev = 1.0;
+    let mut t_curr = s;
+    let mut val = [
+        cx[0] * t_prev + cx[1] * t_curr,
+        cy[0] * t_prev + cy[1] * t_curr,
+        cz[0] * t_prev + cz[1] * t_curr,
+    ];
+    let two_s = 2.0 * s;
+    for k in 2..n {
+        let t_next = two_s * t_curr - t_prev;
+        val[0] += cx[k] * t_next;
+        val[1] += cy[k] * t_next;
+        val[2] += cz[k] * t_next;
+        t_prev = t_curr;
+        t_curr = t_next;
+    }
+    val
+}
+
 /// A loaded SPK file: DAF plus per-segment metadata and a
 /// (target, center) index for O(1) segment lookup.
+///
+/// # Per-call hot path
+/// `state()` is hit hard during propagation: thousands to millions of
+/// calls with monotonically-increasing `et` against the same
+/// `(target, center)` pair. We optimize that pattern in two ways:
+/// 1. The `(target, center) -> Vec<segment_idx>` index uses `FxHashMap`
+///    rather than the std `HashMap`'s SipHash, since the key is two
+///    `i32`s and HashDoS is irrelevant for a SPK file we built.
+/// 2. A single `AtomicUsize` MRU cache (`last_segment`) memoizes the
+///    last successfully-evaluated segment index. On a propagation hot
+///    loop, ~99% of calls hit the cache and skip the index entirely.
+///    The cache is racy-but-safe: `segments` is immutable after
+///    construction so any index it stores is always valid.
+///
+/// # Cache safety vs overlapping segments
+/// The cache must never return a different segment than a fresh
+/// `try_direct` call would for the same `(target, center, et)`. When a
+/// `(target, center)` group has multiple segments whose ET coverage
+/// ranges overlap, the cached choice would depend on call history
+/// (whichever overlapping segment was most recently visited would
+/// "win" instead of the consistent insertion-order winner from
+/// `try_direct`). To prevent that, an internal per-segment
+/// `cacheable` flag is set only for segments whose ET range does
+/// **not** overlap any sibling in the same `(target, center)` group;
+/// only those segments are ever stored in `last_segment`, and the
+/// fast path also validates the flag. For DE-series ephemerides
+/// every key has exactly one segment, so all segments are cacheable
+/// and the cache fires unconditionally.
 pub struct SpkFile {
     segments: Vec<SpkSegment>,
-    index: HashMap<(i32, i32), Vec<usize>>,
+    index: FxHashMap<(i32, i32), Vec<usize>>,
+    /// Per-segment flag: `true` iff this segment can be safely cached
+    /// in `last_segment` without making `state()` history-dependent.
+    /// See struct-level docs.
+    cacheable: Vec<bool>,
+    last_segment: AtomicUsize,
 }
 
 impl SpkFile {
@@ -552,7 +700,7 @@ impl SpkFile {
 
     pub fn from_daf(daf: DafFile) -> Result<Self, SpkError> {
         let mut segments = Vec::new();
-        let mut index: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        let mut index: FxHashMap<(i32, i32), Vec<usize>> = FxHashMap::default();
         for summary in daf.summaries()? {
             if summary.doubles.len() < 2 || summary.integers.len() < 6 {
                 continue;
@@ -591,7 +739,37 @@ impl SpkFile {
                 payload,
             });
         }
-        Ok(SpkFile { segments, index })
+        // Compute per-segment cache safety: a segment is cacheable iff
+        // no sibling (same target/center) has an overlapping ET range.
+        // Without this, the MRU cache would make `state()`
+        // history-dependent for kernels with overlapping segments.
+        let mut cacheable = vec![true; segments.len()];
+        for indices in index.values() {
+            if indices.len() <= 1 {
+                continue;
+            }
+            for i in 0..indices.len() {
+                for j in (i + 1)..indices.len() {
+                    let a = &segments[indices[i]];
+                    let b = &segments[indices[j]];
+                    // Two closed intervals [a.start, a.end] and
+                    // [b.start, b.end] overlap iff each contains the
+                    // other's lower bound (or equivalently:
+                    // a.start <= b.end && b.start <= a.end).
+                    if a.start_et <= b.end_et && b.start_et <= a.end_et {
+                        cacheable[indices[i]] = false;
+                        cacheable[indices[j]] = false;
+                    }
+                }
+            }
+        }
+
+        Ok(SpkFile {
+            segments,
+            index,
+            cacheable,
+            last_segment: AtomicUsize::new(MRU_EMPTY),
+        })
     }
 
     pub fn segments(&self) -> &[SpkSegment] {
@@ -620,13 +798,40 @@ impl SpkFile {
     /// SSB) by recursively summing segments rooted at body 0 (SSB),
     /// then subtracts. All segments must share the same inertial frame;
     /// this holds for DE-series planetary ephemerides (all J2000).
+    #[inline]
     pub fn state(&self, target: i32, center: i32, et: f64) -> Result<[f64; 6], SpkError> {
         if target == center {
             return Ok([0.0; 6]);
         }
+
+        // MRU fast path: skip the index entirely when consecutive calls
+        // hit the same segment (the dominant pattern in propagation).
+        // The `cacheable[cached]` gate is what guarantees the cache can
+        // never return a different segment than `try_direct` would for
+        // the same `(target, center, et)` (see struct docs).
+        let cached = self.last_segment.load(Ordering::Relaxed);
+        if cached < self.segments.len() && self.cacheable[cached] {
+            let seg = &self.segments[cached];
+            if seg.target == target
+                && seg.center == center
+                && et >= seg.start_et
+                && et <= seg.end_et
+            {
+                return Self::eval_segment(seg, et);
+            }
+        }
+
         if let Some(s) = self.try_direct(target, center, et)? {
             return Ok(s);
         }
+        self.state_via_ssb_chain(target, center, et)
+    }
+
+    /// SSB-chain fallback path. Marked `#[cold]` so LLVM keeps it off
+    /// the hot I-cache line for `state()`.
+    #[cold]
+    #[inline(never)]
+    fn state_via_ssb_chain(&self, target: i32, center: i32, et: f64) -> Result<[f64; 6], SpkError> {
         let t_ssb = self.state_wrt_ssb(target, et)?;
         let c_ssb = self.state_wrt_ssb(center, et)?;
         let mut out = [0.0_f64; 6];
@@ -638,12 +843,19 @@ impl SpkFile {
 
     /// Try to satisfy the pair from a single segment (or a single
     /// reverse segment by negation). Returns `Ok(None)` when neither
-    /// direction has coverage at `et`.
+    /// direction has coverage at `et`. Updates the MRU cache on a
+    /// forward-direction hit (reverse hits require state negation, so
+    /// they're not cached — the cache always points at a segment whose
+    /// `target`/`center` match the query exactly).
+    #[inline]
     fn try_direct(&self, target: i32, center: i32, et: f64) -> Result<Option<[f64; 6]>, SpkError> {
         if let Some(indices) = self.index.get(&(target, center)) {
             for &i in indices {
                 let seg = &self.segments[i];
                 if et >= seg.start_et && et <= seg.end_et {
+                    if self.cacheable[i] {
+                        self.last_segment.store(i, Ordering::Relaxed);
+                    }
                     return Ok(Some(Self::eval_segment(seg, et)?));
                 }
             }
@@ -663,6 +875,7 @@ impl SpkFile {
         Ok(None)
     }
 
+    #[inline]
     fn eval_segment(seg: &SpkSegment, et: f64) -> Result<[f64; 6], SpkError> {
         match &seg.payload {
             SpkPayload::Type2(t) => t.evaluate(et),
@@ -675,7 +888,10 @@ impl SpkFile {
 
     /// State of `body` wrt SSB (NAIF 0) at `et`, by walking
     /// `body -> next_center -> ... -> 0`. Detects cycles and bails if
-    /// the chain exceeds a conservative depth bound.
+    /// the chain exceeds a conservative depth bound. Cold path — only
+    /// reached when no direct segment covers the requested pair.
+    #[cold]
+    #[inline(never)]
     fn state_wrt_ssb(&self, body: i32, et: f64) -> Result<[f64; 6], SpkError> {
         if body == 0 {
             return Ok([0.0; 6]);
@@ -711,7 +927,9 @@ impl SpkFile {
     /// Pick one segment whose target is `body`, whose covers `et`, and
     /// whose center is closer to SSB (prefer center = 0 when available;
     /// otherwise the first matching segment). Returns the segment state
-    /// and the center body we advanced to.
+    /// and the center body we advanced to. Cold path.
+    #[cold]
+    #[inline(never)]
     fn step_toward_ssb(&self, body: i32, et: f64) -> Result<([f64; 6], i32), SpkError> {
         let mut preferred: Option<(&SpkSegment, [f64; 6])> = None;
         for seg in &self.segments {
@@ -839,6 +1057,89 @@ mod tests {
             (d_analytic - d_fd).abs() < 1e-6,
             "analytic={d_analytic} fd={d_fd}"
         );
+    }
+}
+
+#[cfg(test)]
+mod cheby3_parity_tests {
+    //! Pin down that the 3-axis shared evaluators produce bit-identical
+    //! output to the scalar `cheby_val_and_deriv` called once per axis.
+    //! Same per-channel arithmetic order, so equality must hold even at
+    //! `rtol=atol=0` on every f64 bit.
+    use super::{cheby3_val_and_deriv, cheby3_val_only, cheby_val_and_deriv};
+
+    fn coeffs(seed: u64, n: usize) -> Vec<f64> {
+        // Deterministic pseudo-random f64s in roughly [-1, 1] without
+        // pulling in a `rand` dep — sufficient to trip any FP reorder.
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        (0..n)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let bits = x >> 11;
+                (bits as f64) * (1.0 / (1_u64 << 53) as f64) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cheby3_val_and_deriv_matches_scalar_bit_for_bit() {
+        for &n in &[2usize, 3, 8, 11, 13, 14, 27] {
+            let cx = coeffs(0xA, n);
+            let cy = coeffs(0xB, n);
+            let cz = coeffs(0xC, n);
+            for &s in &[-1.0, -0.7, -0.123, 0.0, 0.25, 0.5, 0.999, 1.0] {
+                let (vx, dx) = cheby_val_and_deriv(&cx, s);
+                let (vy, dy) = cheby_val_and_deriv(&cy, s);
+                let (vz, dz) = cheby_val_and_deriv(&cz, s);
+                let (val, der) = cheby3_val_and_deriv(&cx, &cy, &cz, s);
+                assert_eq!(val[0].to_bits(), vx.to_bits(), "val.x n={n} s={s}");
+                assert_eq!(val[1].to_bits(), vy.to_bits(), "val.y n={n} s={s}");
+                assert_eq!(val[2].to_bits(), vz.to_bits(), "val.z n={n} s={s}");
+                assert_eq!(der[0].to_bits(), dx.to_bits(), "der.x n={n} s={s}");
+                assert_eq!(der[1].to_bits(), dy.to_bits(), "der.y n={n} s={s}");
+                assert_eq!(der[2].to_bits(), dz.to_bits(), "der.z n={n} s={s}");
+            }
+        }
+    }
+
+    #[test]
+    fn cheby3_val_only_matches_scalar_bit_for_bit() {
+        for &n in &[2usize, 3, 8, 11, 13, 14, 27] {
+            let cx = coeffs(0x1, n);
+            let cy = coeffs(0x2, n);
+            let cz = coeffs(0x3, n);
+            for &s in &[-1.0, -0.7, -0.123, 0.0, 0.25, 0.5, 0.999, 1.0] {
+                let (vx, _) = cheby_val_and_deriv(&cx, s);
+                let (vy, _) = cheby_val_and_deriv(&cy, s);
+                let (vz, _) = cheby_val_and_deriv(&cz, s);
+                let v3 = cheby3_val_only(&cx, &cy, &cz, s);
+                assert_eq!(v3[0].to_bits(), vx.to_bits(), "x n={n} s={s}");
+                assert_eq!(v3[1].to_bits(), vy.to_bits(), "y n={n} s={s}");
+                assert_eq!(v3[2].to_bits(), vz.to_bits(), "z n={n} s={s}");
+            }
+        }
+    }
+
+    #[test]
+    fn cheby3_handles_degenerate_lengths() {
+        // n=0 and n=1 short-circuit — must agree with three scalar calls.
+        let s = 0.3_f64;
+        let (val, der) = cheby3_val_and_deriv(&[], &[], &[], s);
+        assert_eq!(val, [0.0; 3]);
+        assert_eq!(der, [0.0; 3]);
+        let v3 = cheby3_val_only(&[], &[], &[], s);
+        assert_eq!(v3, [0.0; 3]);
+
+        let cx = [1.5];
+        let cy = [-0.25];
+        let cz = [42.0];
+        let (val, der) = cheby3_val_and_deriv(&cx, &cy, &cz, s);
+        assert_eq!(val, [1.5, -0.25, 42.0]);
+        assert_eq!(der, [0.0; 3]);
+        let v3 = cheby3_val_only(&cx, &cy, &cz, s);
+        assert_eq!(v3, [1.5, -0.25, 42.0]);
     }
 }
 

@@ -1,12 +1,18 @@
-//! Pure-Rust NAIF kernel readers.
+//! Pure-Rust readers (and writer) for NASA/NAIF SPICE kernel formats.
 //!
-//! Reimplements the subset of CSPICE that adam-core actually uses, with
-//! memory-mapped I/O and no FFI. The DAF parser ([`daf`]) is the shared
-//! container reader; per-kernel-type parsers (starting with SPK in
-//! [`spk`]) build on top of it.
+//! Implements the subset of SPICE this crate explicitly supports — DAF
+//! containers, SPK ephemerides, binary PCK rotations, and the
+//! body-name slice of text kernels — with memory-mapped I/O and no
+//! FFI. The DAF parser ([`daf`]) is the shared container reader; the
+//! per-kernel-type parsers ([`spk`], [`pck`], [`text_kernel`]) build
+//! on top of it. [`spk_writer`] emits SPK Type 3 and Type 9 segments.
 //!
-//! This crate does not link CSPICE. Parity against CSPICE is asserted
-//! in the Python test suite via the existing SPICE golden fixture.
+//! This crate does not link CSPICE. Bit-for-bit parity against CSPICE
+//! is asserted in the sibling `spicekit-bench` crate, which links
+//! `cspice-sys` behind a feature flag and exercises every numeric
+//! code path (`spkez`, `pxform`, `sxform`, `bodc2n`, `bodn2c`, plus
+//! the text-kernel precedence semantics) at machine-epsilon
+//! tolerance.
 
 pub mod daf;
 pub mod frame;

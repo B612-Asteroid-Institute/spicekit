@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/spicekit.svg)](https://pypi.org/project/spicekit/)
 [![CI](https://github.com/B612-Asteroid-Institute/spicekit/actions/workflows/ci.yml/badge.svg)](https://github.com/B612-Asteroid-Institute/spicekit/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 Python bindings for [`spicekit`](../spicekit), a pure-Rust reader for
 NASA/NAIF SPICE kernel formats (DAF, SPK, PCK, text kernels). Independent
