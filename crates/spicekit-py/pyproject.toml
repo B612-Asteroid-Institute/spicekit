@@ -4,10 +4,11 @@ build-backend = "maturin"
 
 [project]
 name = "spicekit"
-version = "0.2.0"
+version = "0.2.1"
 description = "Python bindings for spicekit: pure-Rust NAIF kernel readers (DAF/SPK/PCK/text kernels)."
 readme = "README.md"
 license = { text = "MIT" }
+license-files = ["LICENSE", "LICENSE-NOTICES"]
 authors = [
     { name = "Alec Koumjian", email = "alec@b612foundation.org" },
     { name = "Asteroid Institute" },

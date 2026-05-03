@@ -7,6 +7,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-05-03
+
+### Fixed
+
+- spicekit-py PyPI sdist for 0.2.0 failed to upload because the
+  generated `PKG-INFO` declared `License-File: LICENSE` /
+  `License-File: LICENSE-NOTICES` (archive-root-relative) while the
+  actual files lived at `crates/spicekit-py/LICENSE` /
+  `crates/spicekit-py/LICENSE-NOTICES` in the sdist tar tree (the
+  spicekit-py crate is a member of a Cargo workspace, so the sdist is
+  rooted at the workspace root rather than the crate root). PyPI's
+  PEP-639 strict validator rejected the sdist with a 400 response.
+  The 0.2.0 wheels uploaded successfully (their internal
+  `.dist-info/licenses/` layout was correct), so `pip install
+  spicekit==0.2.0` works on every supported platform/Python
+  combination and the perf changes from 0.2.0 are usable; only
+  source-distribution installs were broken.
+
+  This release adds an explicit `license-files = ["LICENSE",
+  "LICENSE-NOTICES"]` to `crates/spicekit-py/pyproject.toml`, which
+  makes maturin relocate those files to the sdist archive root
+  (matching what `PKG-INFO` declares) and unblocks the PyPI sdist
+  upload. Verified locally that the resulting sdist contains
+  `spicekit-0.2.1/LICENSE` and `spicekit-0.2.1/LICENSE-NOTICES` at
+  the archive root.
+
+  No code changes; identical perf and behavior to 0.2.0.
+
 ## [0.2.0] — 2026-05-02
 
 ### Changed
@@ -99,6 +127,7 @@ Initial public release.
   CSpice numerically and for `bodc2n` across all 539 unique built-in
   codes.
 
-[Unreleased]: https://github.com/B612-Asteroid-Institute/spicekit/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/B612-Asteroid-Institute/spicekit/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/B612-Asteroid-Institute/spicekit/releases/tag/v0.2.1
 [0.2.0]: https://github.com/B612-Asteroid-Institute/spicekit/releases/tag/v0.2.0
 [0.1.0]: https://github.com/B612-Asteroid-Institute/spicekit/releases/tag/v0.1.0
