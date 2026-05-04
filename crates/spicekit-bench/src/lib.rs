@@ -3,9 +3,8 @@
 //!
 //! The only dispatch logic intentionally duplicated here (rather than
 //! exposed from the `spicekit` library) is the multi-reader backend
-//! that spkez/pxform/sxform go through. In production, adam-core's
-//! `RustBackend` owns that dispatch on the Python side; this crate
-//! re-implements it in Rust so the comparison lines up with what
+//! that spkez/pxform/sxform go through. This crate re-implements the
+//! kernel-list dispatch in Rust so the comparison lines up with what
 //! CSpice does after a batch of `furnsh_c` calls. Keeping it here
 //! (and not in the library) avoids baking a specific kernel-list
 //! semantic into the public spicekit surface.
@@ -40,8 +39,7 @@ const IAU_EARTH_FRAME_CODE: i32 = 10013;
 
 /// Deterministic ET grid spanning an interval inside the overlap of
 /// DE440 and the three Earth PCKs (MJD TDB 59000..60500, ≈2020–2024).
-/// Matches `_make_ets` in `migration/scripts/spice_backend_benchmark.py`
-/// and `_sample_ets` in `tests/test_spice_backend.py`.
+/// Shared by parity tests and benchmarks.
 pub fn make_ets(n: usize) -> Vec<f64> {
     if n == 0 {
         return Vec::new();
@@ -57,8 +55,7 @@ pub fn make_ets(n: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Exact MJDs from `_sample_ets` in adam-core's test_spice_backend.py,
-/// used for parity comparisons.
+/// Fixed MJD samples used for parity comparisons.
 pub fn parity_sample_ets() -> Vec<f64> {
     [60000.0, 60000.5, 60001.0, 60100.0, 59500.0]
         .into_iter()
@@ -128,8 +125,8 @@ struct Kernel {
     content: Loaded,
 }
 
-/// Minimal spicekit-side analogue of adam-core's `RustBackend` — tracks
-/// a list of loaded kernels in furnsh order and routes batch queries
+/// Minimal furnsh-style backend that tracks a list of loaded kernels
+/// in furnsh order and routes batch queries
 /// through them using the same last-loaded-wins semantics. Used by the
 /// bench binary and the integration parity tests.
 #[derive(Default)]
@@ -442,8 +439,7 @@ fn try_states_in_frame(
     Ok(out)
 }
 
-/// Matches the `sxform_matrix` method on adam-core's `NaifPck`:
-/// compose the static inter-inertial 3×3 with the PCK's Euler-angle
+/// Compose the static inter-inertial 3×3 with the PCK's Euler-angle
 /// `ref_frame → body` rotation, and invert if the inertial side is
 /// the "to" argument.
 fn build_sxform_stack(
@@ -491,8 +487,8 @@ fn static_inter_inertial(target_name: &str, ref_id: i32) -> [[f64; 3]; 3] {
     }
 }
 
-/// Mirror adam-core's `_normalize_body_name`: uppercase, collapse
-/// whitespace, strip trailing/leading spaces. Used only for custom
+/// Normalize body names by uppercasing, collapsing whitespace, and
+/// stripping leading/trailing spaces. Used only for custom
 /// bindings — built-in lookups go straight through `naif_ids::bodn2c`.
 fn normalize_body_name(raw: &str) -> String {
     let upper = raw.to_uppercase();

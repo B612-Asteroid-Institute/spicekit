@@ -497,7 +497,7 @@ mod tests {
     fn summary_strips_trailing_space_padding() {
         // Real NAIF kernels we care about (SPK/PCK from Fortran producers)
         // pad the 40/48/... byte name slot with trailing spaces; the reader
-        // must strip them so downstream display/debug output isn't littered
+        // must strip them so caller display/debug output isn't littered
         // with whitespace.
         //
         // `build_daf` already initializes the name record to spaces; simply

@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-05-04
+
 ### Added
 
 - Public text-kernel content parser APIs:
@@ -113,18 +115,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   level docs in `daf.rs`, `pck.rs`, `spk_writer.rs`, and the
   spicekit-py module docstring) no longer claim CSpice parity is
   asserted in the Python test suite (it actually lives in the
-  sibling `spicekit-bench` crate) and no longer reference adam-core
-  by name as the originating consumer; they describe spicekit's
-  scope on its own terms instead.
+  sibling `spicekit-bench` crate); they describe spicekit's scope
+  on its own terms instead.
 
 ### Changed
 
 - `spicekit.NaifSpkWriter()` default `locifn` (the DAF "internal
-  name" header field) is now `"spicekit"` instead of `"adam-core"`.
-  Behavior change: SPK files written via `NaifSpkWriter()` with no
-  explicit `locifn` will have `"spicekit"` stamped in the header.
-  Callers that need the previous string can pass
-  `NaifSpkWriter(locifn="adam-core")` explicitly.
+  name" header field) is now `"spicekit"` instead of the previous
+  project-specific default. Behavior change: SPK files written via
+  `NaifSpkWriter()` with no explicit `locifn` will have `"spicekit"`
+  stamped in the header. Callers that need a specific DAF internal
+  name can pass `NaifSpkWriter(locifn=...)` explicitly.
 
 ## [0.1.0] — 2026-04-21
 
@@ -152,7 +153,8 @@ Initial public release.
   CSpice numerically and for `bodc2n` across all 539 unique built-in
   codes.
 
-[Unreleased]: https://github.com/B612-Asteroid-Institute/spicekit/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/B612-Asteroid-Institute/spicekit/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/B612-Asteroid-Institute/spicekit/releases/tag/v0.2.2
 [0.2.1]: https://github.com/B612-Asteroid-Institute/spicekit/releases/tag/v0.2.1
 [0.2.0]: https://github.com/B612-Asteroid-Institute/spicekit/releases/tag/v0.2.0
 [0.1.0]: https://github.com/B612-Asteroid-Institute/spicekit/releases/tag/v0.1.0

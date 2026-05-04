@@ -1,6 +1,6 @@
 //! Resolve NAIF kernel paths for the parity + bench suite.
 //!
-//! The six kernels mirror adam-core's `DEFAULT_KERNELS`: a leapseconds
+//! The six kernels are the canonical benchmark set: a leapseconds
 //! file, DE440 ephemeris, three Earth EOP PCKs (predict / historical /
 //! high-precision), and the Earth ITRF93 binary PCK. Paths are obtained
 //! from the `naif-*` PyPI packages — each package exports a single
@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// All kernels in the order the bench / parity tests furnsh them.
-/// Last-loaded-wins applies to the Earth PCKs, matching how adam-core
-/// loads them (predict → historical → high-prec → ITRF93 binary).
+/// Last-loaded-wins applies to the Earth PCKs: predict → historical →
+/// high-prec → ITRF93 binary.
 pub fn default_kernel_paths() -> Vec<PathBuf> {
     vec![
         resolve("LEAPSECONDS", "naif_leapseconds", "leapseconds"),

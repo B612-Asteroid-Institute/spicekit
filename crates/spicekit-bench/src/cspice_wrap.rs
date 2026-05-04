@@ -7,8 +7,6 @@
 //! mode so a bad kernel surfaces as `Err` rather than aborting the
 //! bench process.
 //!
-//! Mirrors the pattern used in adam-core's `adam_core_rs_spice` crate;
-//! kept local here so spicekit-bench has no cross-repo path dep.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;

@@ -24,7 +24,7 @@ distribution terms (see [`LICENSE-NOTICES`](./LICENSE-NOTICES)).
 
 ```toml
 [dependencies]
-spicekit = "0.1"
+spicekit = "0.2"
 ```
 
 ### Python
@@ -35,9 +35,8 @@ pip install spicekit
 
 ## Scope
 
-`spicekit` implements the subset of SPICE consumed by the
-[adam-core](https://github.com/B612-Asteroid-Institute/adam_core) asteroid
-dynamics library, which is the project it was originally extracted from:
+`spicekit` implements a focused, embeddable subset of SPICE kernel I/O
+and frame evaluation:
 
 - **DAF**: memory-mapped container parser (shared by SPK and PCK)
 - **SPK**: reader for Types 2, 3, 9, 13; writer for Types 3 and 9
@@ -62,7 +61,7 @@ dynamics library, which is the project it was originally extracted from:
   behind a feature flag and compares every code path against CSpice at
   machine-epsilon tolerance.
 - No CLI tool.
-- Read-only for PCK in v0.1.
+- PCK support is read-only.
 
 ## Python bindings
 
