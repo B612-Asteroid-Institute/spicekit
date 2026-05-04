@@ -4,9 +4,9 @@
 //! Earth EOP PCKs + Earth ITRF93 binary PCK, resolved from the
 //! `naif-*` PyPI packages via `crates/spicekit-bench/src/kernels.rs`),
 //! then measures the same operations through both backends on matched
-//! inputs. The case matrix mirrors
-//! `adam-core/migration/scripts/spice_backend_benchmark.py` so results
-//! are directly comparable across the two repos.
+//! inputs. The case matrix covers ephemerides, ITRF93 Earth-rotation
+//! transforms, ITRF93-state output, leapseconds `DELTET/*` kernel-pool
+//! access, and frame-name association lookups.
 //!
 //! Build/run locally (Linux — CSpice auto-downloads via cspice-sys):
 //!     cargo run --release -p spicekit-bench
@@ -39,10 +39,14 @@ fn main() {
 }
 
 #[cfg(feature = "cspice")]
+use std::hint::black_box;
+#[cfg(feature = "cspice")]
 use std::time::Instant;
 
 #[cfg(feature = "cspice")]
-use spicekit_bench::{make_ets, Backend};
+use spicekit::text_kernel::LeapSecondsKernel;
+#[cfg(feature = "cspice")]
+use spicekit_bench::{kernel_date_to_et_seconds, make_ets, Backend};
 
 #[cfg(feature = "cspice")]
 const TIMED_ITERS: usize = 20;
@@ -50,6 +54,10 @@ const TIMED_ITERS: usize = 20;
 const WARMUP_ITERS: usize = 2;
 #[cfg(feature = "cspice")]
 const BODN2C_CALLS_PER_ITER: usize = 10_000;
+#[cfg(feature = "cspice")]
+const LSK_POOL_CALLS_PER_ITER: usize = 10_000;
+#[cfg(feature = "cspice")]
+const FRAME_LOOKUP_CALLS_PER_ITER: usize = 10_000;
 #[cfg(feature = "cspice")]
 const BATCH_SIZES: &[usize] = &[1, 100, 1_000, 10_000];
 
@@ -59,6 +67,7 @@ const SPK_CASES: &[(&str, i32, i32, &str)] = &[
     ("sun_wrt_ssb_ecliptic", 10, 0, "ECLIPJ2000"),
     ("earth_wrt_sun_ecliptic", 399, 10, "ECLIPJ2000"),
     ("moon_wrt_earth_j2000", 301, 399, "J2000"),
+    ("moon_wrt_earth_itrf93", 301, 399, "ITRF93"),
     ("mars_bc_wrt_sun_j2000", 4, 10, "J2000"),
     ("saturn_bc_wrt_sun_j2000", 6, 10, "J2000"),
 ];
@@ -73,6 +82,14 @@ const ROT_PAIRS: &[(&str, &str)] = &[
 
 #[cfg(feature = "cspice")]
 const BODN2C_NAMES: &[&str] = &["SUN", "EARTH", "MARS BARYCENTER", "MOON", "JWST", "HST"];
+#[cfg(feature = "cspice")]
+const LSK_NUMERIC_VARS: &[&str] = &[
+    "DELTET/DELTA_T_A",
+    "DELTET/K",
+    "DELTET/EB",
+    "DELTET/M",
+    "DELTET/DELTA_AT",
+];
 
 #[cfg(feature = "cspice")]
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +135,36 @@ fn print_row(op: &str, case: &str, n: usize, cspice: Timings, spicekit: Timings)
 }
 
 #[cfg(feature = "cspice")]
+fn lsk_metadata(lsk: &LeapSecondsKernel) -> [(usize, char); 5] {
+    [
+        (1, 'N'),
+        (1, 'N'),
+        (1, 'N'),
+        (lsk.m.len(), 'N'),
+        (lsk.delta_at.len() * 2, 'N'),
+    ]
+}
+
+#[cfg(feature = "cspice")]
+fn lsk_pool_values(lsk: &LeapSecondsKernel) -> [Vec<f64>; 5] {
+    [
+        vec![lsk.delta_t_a],
+        vec![lsk.k],
+        vec![lsk.eb],
+        lsk.m.to_vec(),
+        lsk.delta_at
+            .iter()
+            .flat_map(|entry| {
+                [
+                    entry.leap_seconds as f64,
+                    kernel_date_to_et_seconds(entry.date),
+                ]
+            })
+            .collect(),
+    ]
+}
+
+#[cfg(feature = "cspice")]
 fn main() {
     use spicekit_bench::cspice_wrap;
     use spicekit_bench::kernels::default_kernel_paths;
@@ -141,11 +188,11 @@ fn main() {
             let ets = make_ets(n);
             let cspice_t = run(TIMED_ITERS, WARMUP_ITERS, || {
                 for &et in &ets {
-                    cspice_wrap::spkez(target, et, frame, "NONE", observer).unwrap();
+                    black_box(cspice_wrap::spkez(target, et, frame, "NONE", observer).unwrap());
                 }
             });
             let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
-                spicekit.spkez_batch(target, observer, frame, &ets).unwrap();
+                black_box(spicekit.spkez_batch(target, observer, frame, &ets).unwrap());
             });
             print_row("spkez_batch", label, n, cspice_t, spicekit_t);
         }
@@ -159,21 +206,21 @@ fn main() {
 
             let cspice_t = run(TIMED_ITERS, WARMUP_ITERS, || {
                 for &et in &ets {
-                    cspice_wrap::pxform(frame_from, frame_to, et).unwrap();
+                    black_box(cspice_wrap::pxform(frame_from, frame_to, et).unwrap());
                 }
             });
             let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
-                spicekit.pxform_batch(frame_from, frame_to, &ets).unwrap();
+                black_box(spicekit.pxform_batch(frame_from, frame_to, &ets).unwrap());
             });
             print_row("pxform_batch", &label_pair, n, cspice_t, spicekit_t);
 
             let cspice_t = run(TIMED_ITERS, WARMUP_ITERS, || {
                 for &et in &ets {
-                    cspice_wrap::sxform(frame_from, frame_to, et).unwrap();
+                    black_box(cspice_wrap::sxform(frame_from, frame_to, et).unwrap());
                 }
             });
             let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
-                spicekit.sxform_batch(frame_from, frame_to, &ets).unwrap();
+                black_box(spicekit.sxform_batch(frame_from, frame_to, &ets).unwrap());
             });
             print_row("sxform_batch", &label_pair, n, cspice_t, spicekit_t);
         }
@@ -183,14 +230,115 @@ fn main() {
     for &name in BODN2C_NAMES {
         let cspice_t = run(TIMED_ITERS, WARMUP_ITERS, || {
             for _ in 0..BODN2C_CALLS_PER_ITER {
-                let _ = cspice_wrap::bodn2c(name).unwrap();
+                black_box(cspice_wrap::bodn2c(name).unwrap());
             }
         });
         let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
             for _ in 0..BODN2C_CALLS_PER_ITER {
-                let _ = spicekit.bodn2c(name).unwrap();
+                black_box(spicekit.bodn2c(name).unwrap());
             }
         });
         print_row("bodn2c", name, BODN2C_CALLS_PER_ITER, cspice_t, spicekit_t);
     }
+
+    let lsk = spicekit
+        .leapseconds()
+        .expect("default kernel set includes leapseconds");
+
+    // LSK kernel-pool metadata and values — CSpice dtpool/gdpool vs.
+    // spicekit's retained structured DELTET content.
+    let cspice_t = run(TIMED_ITERS, WARMUP_ITERS, || {
+        for _ in 0..LSK_POOL_CALLS_PER_ITER {
+            for &name in LSK_NUMERIC_VARS {
+                black_box(cspice_wrap::dtpool(name).unwrap().unwrap());
+            }
+        }
+    });
+    let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
+        for _ in 0..LSK_POOL_CALLS_PER_ITER {
+            black_box(lsk_metadata(lsk));
+        }
+    });
+    print_row(
+        "lsk_dtpool",
+        "DELTET/*",
+        LSK_POOL_CALLS_PER_ITER * LSK_NUMERIC_VARS.len(),
+        cspice_t,
+        spicekit_t,
+    );
+
+    let cspice_t = run(TIMED_ITERS, WARMUP_ITERS, || {
+        for _ in 0..LSK_POOL_CALLS_PER_ITER {
+            for &name in LSK_NUMERIC_VARS {
+                black_box(cspice_wrap::gdpool(name).unwrap().unwrap());
+            }
+        }
+    });
+    let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
+        for _ in 0..LSK_POOL_CALLS_PER_ITER {
+            black_box(lsk_pool_values(lsk));
+        }
+    });
+    print_row(
+        "lsk_gdpool",
+        "DELTET/*",
+        LSK_POOL_CALLS_PER_ITER * LSK_NUMERIC_VARS.len(),
+        cspice_t,
+        spicekit_t,
+    );
+
+    // Earth frame-association lookups provided by naif-earth-itrf93.
+    let cspice_t = run(TIMED_ITERS, WARMUP_ITERS, || {
+        for _ in 0..FRAME_LOOKUP_CALLS_PER_ITER {
+            black_box(cspice_wrap::cnmfrm("EARTH").unwrap());
+        }
+    });
+    let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
+        for _ in 0..FRAME_LOOKUP_CALLS_PER_ITER {
+            black_box(spicekit.cnmfrm("EARTH").unwrap());
+        }
+    });
+    print_row(
+        "cnmfrm",
+        "EARTH",
+        FRAME_LOOKUP_CALLS_PER_ITER,
+        cspice_t,
+        spicekit_t,
+    );
+
+    let cspice_t = run(TIMED_ITERS, WARMUP_ITERS, || {
+        for _ in 0..FRAME_LOOKUP_CALLS_PER_ITER {
+            black_box(cspice_wrap::cidfrm(399).unwrap());
+        }
+    });
+    let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
+        for _ in 0..FRAME_LOOKUP_CALLS_PER_ITER {
+            black_box(spicekit.cidfrm(399).unwrap());
+        }
+    });
+    print_row(
+        "cidfrm",
+        "EARTH(399)",
+        FRAME_LOOKUP_CALLS_PER_ITER,
+        cspice_t,
+        spicekit_t,
+    );
+
+    let cspice_t = run(TIMED_ITERS, WARMUP_ITERS, || {
+        for _ in 0..FRAME_LOOKUP_CALLS_PER_ITER {
+            black_box(cspice_wrap::namfrm("ITRF93").unwrap());
+        }
+    });
+    let spicekit_t = run(TIMED_ITERS, WARMUP_ITERS, || {
+        for _ in 0..FRAME_LOOKUP_CALLS_PER_ITER {
+            black_box(spicekit.namfrm("ITRF93").unwrap());
+        }
+    });
+    print_row(
+        "namfrm",
+        "ITRF93",
+        FRAME_LOOKUP_CALLS_PER_ITER,
+        cspice_t,
+        spicekit_t,
+    );
 }
