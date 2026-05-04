@@ -14,8 +14,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Once};
 
+use spicekit::parse_text_kernel;
 use spicekit_bench::kernels::default_kernel_paths;
-use spicekit_bench::{cspice_wrap, parity_sample_ets, Backend, BackendError};
+use spicekit_bench::{
+    cspice_wrap, kernel_date_to_et_seconds, parity_sample_ets, Backend, BackendError,
+};
 
 /// All CSpice parity tests share the kernel pool (furnsh is global in
 /// CSpice). We serialize tests with a Mutex — they each lock a fresh
@@ -105,6 +108,11 @@ fn spkez_batch_parity_earth_wrt_sun_eclipj2000() {
 #[test]
 fn spkez_batch_parity_moon_wrt_earth_j2000() {
     spkez_case(301, 399, "J2000");
+}
+
+#[test]
+fn spkez_batch_parity_moon_wrt_earth_itrf93() {
+    spkez_case(301, 399, "ITRF93");
 }
 
 // ---------------------------------------------------------------------
@@ -299,6 +307,100 @@ fn bodc2n_parity_all_builtin_codes() {
 }
 
 // ---------------------------------------------------------------------
+// Text-kernel LSK/frame semantics
+// ---------------------------------------------------------------------
+
+#[test]
+fn leapseconds_kernel_pool_parity() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let kernels = default_kernel_paths();
+    ensure_cspice_loaded(&kernels);
+
+    let content = parse_text_kernel(&kernels[0]).expect("parse leapseconds kernel");
+    let lsk = content.leapseconds.expect("parsed LSK content");
+    let rust = fresh_rust_backend(&kernels);
+    assert!(
+        rust.leapseconds().is_some(),
+        "furnsh must retain LSK content, not classify it as ignored"
+    );
+
+    let expected_counts = [
+        ("DELTET/DELTA_T_A", 1usize),
+        ("DELTET/K", 1usize),
+        ("DELTET/EB", 1usize),
+        ("DELTET/M", 2usize),
+        ("DELTET/DELTA_AT", lsk.delta_at.len() * 2),
+    ];
+    for (name, expected_count) in expected_counts {
+        let (count, type_char) = cspice_wrap::dtpool(name)
+            .expect("cspice dtpool")
+            .unwrap_or_else(|| panic!("CSpice kernel pool missing {name}"));
+        assert_eq!(type_char, 'N', "{name} should be numeric");
+        assert_eq!(count, expected_count, "{name} count");
+    }
+
+    let scalar_cases = [
+        ("DELTET/DELTA_T_A", vec![lsk.delta_t_a]),
+        ("DELTET/K", vec![lsk.k]),
+        ("DELTET/EB", vec![lsk.eb]),
+        ("DELTET/M", lsk.m.to_vec()),
+    ];
+    for (name, rust_values) in scalar_cases {
+        let c_values = cspice_wrap::gdpool(name)
+            .expect("cspice gdpool")
+            .unwrap_or_else(|| panic!("CSpice kernel pool missing {name}"));
+        assert_eq!(rust_values.len(), c_values.len(), "{name} length");
+        for (i, (&rust_value, &c_value)) in rust_values.iter().zip(&c_values).enumerate() {
+            assert_allclose(rust_value, c_value, 1e-15, 0.0, &format!("{name}[{i}]"));
+        }
+    }
+
+    let mut rust_delta_at = Vec::with_capacity(lsk.delta_at.len() * 2);
+    for entry in &lsk.delta_at {
+        rust_delta_at.push(entry.leap_seconds as f64);
+        rust_delta_at.push(kernel_date_to_et_seconds(entry.date));
+    }
+    let c_delta_at = cspice_wrap::gdpool("DELTET/DELTA_AT")
+        .expect("cspice gdpool DELTET/DELTA_AT")
+        .expect("CSpice kernel pool missing DELTET/DELTA_AT");
+    assert_eq!(rust_delta_at.len(), c_delta_at.len());
+    for (i, (&rust_value, &c_value)) in rust_delta_at.iter().zip(&c_delta_at).enumerate() {
+        assert_allclose(rust_value, c_value, 0.0, 0.0, &format!("DELTA_AT[{i}]"));
+    }
+}
+
+#[test]
+fn earth_itrf93_frame_association_parity() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let kernels = default_kernel_paths();
+    ensure_cspice_loaded(&kernels);
+    let rust = fresh_rust_backend(&kernels);
+
+    let association = rust
+        .frame_association("EARTH")
+        .expect("Earth frame association should be retained");
+    assert_eq!(association.frame, "ITRF93");
+
+    let rust_cnm = rust.cnmfrm("EARTH").expect("spicekit cnmfrm");
+    let c_cnm = cspice_wrap::cnmfrm("EARTH")
+        .expect("cspice cnmfrm")
+        .expect("CSpice cnmfrm not-found");
+    assert_eq!(rust_cnm, c_cnm);
+
+    let rust_cid = rust.cidfrm(399).expect("spicekit cidfrm");
+    let c_cid = cspice_wrap::cidfrm(399)
+        .expect("cspice cidfrm")
+        .expect("CSpice cidfrm not-found");
+    assert_eq!(rust_cid, c_cid);
+
+    let rust_nam = rust.namfrm("ITRF93").expect("spicekit namfrm");
+    let c_nam = cspice_wrap::namfrm("ITRF93")
+        .expect("cspice namfrm")
+        .expect("CSpice namfrm not-found");
+    assert_eq!(rust_nam, c_nam);
+}
+
+// ---------------------------------------------------------------------
 // Text-kernel binding semantics (spicekit-only; no CSpice needed)
 // ---------------------------------------------------------------------
 
@@ -387,6 +489,22 @@ fn unknown_bodn2c_is_not_covered() {
         b.bodn2c("NOT-A-NAIF-NAME"),
         Err(BackendError::NotCovered(_))
     ));
+}
+
+#[test]
+fn unsupported_text_kernel_fails_loudly() {
+    let dir = tempfile::tempdir().unwrap();
+    let tk = dir.path().join("unsupported.tf");
+    write_tk(
+        &tk,
+        "KPL/FK\n\
+         \\begindata\n\
+         FRAME_UNKNOWN = 12345\n\
+         \\begintext\n",
+    );
+    let mut b = Backend::new();
+    let err = b.furnsh(&tk).unwrap_err();
+    assert!(matches!(err, BackendError::UnsupportedTextKernel { .. }));
 }
 
 #[test]

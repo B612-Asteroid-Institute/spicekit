@@ -23,14 +23,20 @@ use spicekit::frame::{
 use spicekit::naif_ids;
 use spicekit::pck::{PckError, PckFile};
 use spicekit::spk::{SpkError, SpkFile};
-use spicekit::text_kernel::{parse_body_bindings, BodyBinding};
+use spicekit::text_kernel::{
+    parse_text_kernel, FrameAssociation, KernelDate, LeapSecondsKernel, TextKernelContent,
+};
 
 /// MJD of J2000 epoch in TDB scale.
 const J2000_TDB_MJD: f64 = 51544.5;
 /// Seconds per day.
 const SECONDS_PER_DAY: f64 = 86_400.0;
-/// NAIF frame code for ITRF93.
+/// Binary-PCK frame class id for ITRF93.
 const ITRF93_FRAME_CODE: i32 = 3000;
+/// SPICE frame id returned by NAMFRM/CNMFRM for ITRF93.
+const ITRF93_NAME_FRAME_CODE: i32 = 13000;
+/// SPICE frame id returned by CNMFRM/CIDFRM for Earth's default IAU frame.
+const IAU_EARTH_FRAME_CODE: i32 = 10013;
 
 /// Deterministic ET grid spanning an interval inside the overlap of
 /// DE440 and the three Earth PCKs (MJD TDB 59000..60500, ≈2020–2024).
@@ -64,6 +70,26 @@ fn mjd_tdb_to_et(mjd_tdb: f64) -> f64 {
     (mjd_tdb - J2000_TDB_MJD) * SECONDS_PER_DAY
 }
 
+/// Convert a raw `@YYYY-MMM-D` text-kernel date literal to the numeric
+/// seconds-past-J2000 value CSpice stores in the kernel pool.
+pub fn kernel_date_to_et_seconds(date: KernelDate) -> f64 {
+    let days = days_from_civil(date.year, date.month, date.day) - days_from_civil(2000, 1, 1);
+    days as f64 * SECONDS_PER_DAY - 0.5 * SECONDS_PER_DAY
+}
+
+fn days_from_civil(year: i32, month: u8, day: u8) -> i64 {
+    let mut y = year as i64;
+    let m = month as i64;
+    let d = day as i64;
+    y -= i64::from(m <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = m + if m > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 #[derive(Debug)]
 pub enum BackendError {
     NotCovered(String),
@@ -71,6 +97,7 @@ pub enum BackendError {
     Pck(PckError),
     Io(std::io::Error),
     Text(String),
+    UnsupportedTextKernel { path: PathBuf },
 }
 
 impl std::fmt::Display for BackendError {
@@ -81,6 +108,9 @@ impl std::fmt::Display for BackendError {
             BackendError::Pck(e) => write!(f, "pck: {e}"),
             BackendError::Io(e) => write!(f, "io: {e}"),
             BackendError::Text(s) => write!(f, "text kernel: {s}"),
+            BackendError::UnsupportedTextKernel { path } => {
+                write!(f, "unsupported text kernel: {}", path.display())
+            }
         }
     }
 }
@@ -90,8 +120,7 @@ impl std::error::Error for BackendError {}
 enum Loaded {
     Spk(SpkFile),
     Pck(PckFile),
-    Text(Vec<BodyBinding>),
-    Ignored,
+    Text(TextKernelContent),
 }
 
 struct Kernel {
@@ -138,21 +167,16 @@ impl Backend {
                 return Ok(());
             }
         }
-        match parse_body_bindings(path) {
-            Ok(bindings) if !bindings.is_empty() => {
-                self.kernels.push(Kernel {
-                    path: path.to_path_buf(),
-                    content: Loaded::Text(bindings),
-                });
-            }
-            Ok(_) => {
-                self.kernels.push(Kernel {
-                    path: path.to_path_buf(),
-                    content: Loaded::Ignored,
-                });
-            }
-            Err(e) => return Err(BackendError::Text(e.to_string())),
+        let content = parse_text_kernel(path).map_err(|e| BackendError::Text(e.to_string()))?;
+        if content.is_empty() {
+            return Err(BackendError::UnsupportedTextKernel {
+                path: path.to_path_buf(),
+            });
         }
+        self.kernels.push(Kernel {
+            path: path.to_path_buf(),
+            content: Loaded::Text(content),
+        });
         Ok(())
     }
 
@@ -171,6 +195,29 @@ impl Backend {
         self.kernels.iter().rev().filter_map(|k| match &k.content {
             Loaded::Pck(p) => Some(p),
             _ => None,
+        })
+    }
+
+    fn text_contents_newest_first(&self) -> impl Iterator<Item = &TextKernelContent> {
+        self.kernels.iter().rev().filter_map(|k| match &k.content {
+            Loaded::Text(content) => Some(content),
+            _ => None,
+        })
+    }
+
+    pub fn leapseconds(&self) -> Option<&LeapSecondsKernel> {
+        self.text_contents_newest_first()
+            .find_map(|content| content.leapseconds.as_ref())
+    }
+
+    pub fn frame_association(&self, body: &str) -> Option<&FrameAssociation> {
+        let key = normalize_body_name(body);
+        self.text_contents_newest_first().find_map(|content| {
+            content
+                .frame_associations
+                .iter()
+                .rev()
+                .find(|association| normalize_body_name(&association.body) == key)
         })
     }
 
@@ -269,8 +316,8 @@ impl Backend {
         let key = normalize_body_name(name);
         let mut custom: Option<i32> = None;
         for k in &self.kernels {
-            if let Loaded::Text(bindings) = &k.content {
-                for b in bindings {
+            if let Loaded::Text(content) = &k.content {
+                for b in &content.bindings {
                     if normalize_body_name(&b.name) == key {
                         custom = Some(b.code);
                     }
@@ -281,6 +328,40 @@ impl Backend {
             return Ok(c);
         }
         naif_ids::bodn2c(name).map_err(|e| BackendError::NotCovered(e.to_string()))
+    }
+
+    pub fn cnmfrm(&self, body_name: &str) -> Result<(i32, String), BackendError> {
+        if let Some(association) = self.frame_association(body_name) {
+            let code = frame_name_to_code(&association.frame).ok_or_else(|| {
+                BackendError::NotCovered(format!(
+                    "frame association for {body_name} names unsupported frame {}",
+                    association.frame
+                ))
+            })?;
+            return Ok((code, association.frame.clone()));
+        }
+
+        if normalize_body_name(body_name) == "EARTH" {
+            // Built-in CSpice frame association when no overriding
+            // OBJECT_EARTH_FRAME FK assignment has been furnished.
+            return Ok((IAU_EARTH_FRAME_CODE, "IAU_EARTH".to_string()));
+        }
+
+        Err(BackendError::NotCovered(format!(
+            "no frame association for body {body_name}"
+        )))
+    }
+
+    pub fn cidfrm(&self, body_code: i32) -> Result<(i32, String), BackendError> {
+        let body_name =
+            naif_ids::bodc2n(body_code).map_err(|e| BackendError::NotCovered(e.to_string()))?;
+        self.cnmfrm(body_name)
+    }
+
+    pub fn namfrm(&self, frame_name: &str) -> Result<i32, BackendError> {
+        frame_name_to_code(frame_name).ok_or_else(|| {
+            BackendError::NotCovered(format!("frame name {frame_name} is not supported"))
+        })
     }
 }
 
@@ -297,6 +378,16 @@ fn peek_daf_idword(path: &Path) -> std::io::Result<Option<[u8; 8]>> {
 
 fn is_inertial(name: &str) -> bool {
     matches!(name, "J2000" | "ECLIPJ2000")
+}
+
+fn frame_name_to_code(frame_name: &str) -> Option<i32> {
+    match frame_name.trim().to_ascii_uppercase().as_str() {
+        "J2000" => Some(1),
+        "ECLIPJ2000" => Some(17),
+        "ITRF93" => Some(ITRF93_NAME_FRAME_CODE),
+        "IAU_EARTH" => Some(IAU_EARTH_FRAME_CODE),
+        _ => None,
+    }
 }
 
 /// Apply a 6×6 to a 6-vector. Kept local so the lib has no extra math

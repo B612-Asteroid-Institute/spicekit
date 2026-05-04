@@ -2,7 +2,8 @@
 //!
 //! Implements the subset of SPICE this crate explicitly supports — DAF
 //! containers, SPK ephemerides, binary PCK rotations, and the
-//! body-name slice of text kernels — with memory-mapped I/O and no
+//! supported text-kernel subset (body names, LSK `DELTET/*`, and the
+//! Earth→ITRF93 frame association) — with memory-mapped I/O and no
 //! FFI. The DAF parser ([`daf`]) is the shared container reader; the
 //! per-kernel-type parsers ([`spk`], [`pck`], [`text_kernel`]) build
 //! on top of it. [`spk_writer`] emits SPK Type 3 and Type 9 segments.
@@ -11,8 +12,7 @@
 //! is asserted in the sibling `spicekit-bench` crate, which links
 //! `cspice-sys` behind a feature flag and exercises every numeric
 //! code path (`spkez`, `pxform`, `sxform`, `bodc2n`, `bodn2c`, plus
-//! the text-kernel precedence semantics) at machine-epsilon
-//! tolerance.
+//! the supported text-kernel semantics) at machine-epsilon tolerance.
 
 pub mod daf;
 pub mod frame;
@@ -29,5 +29,7 @@ pub use pck::{PckError, PckFile, PckSegment};
 pub use spk::{SpkError, SpkFile, SpkSegment};
 pub use spk_writer::{SpkWriter, SpkWriterError, Type3Record, Type3Segment, Type9Segment};
 pub use text_kernel::{
-    parse_body_bindings, parse_body_bindings_from_str, BodyBinding, TextKernelError,
+    parse_body_bindings, parse_body_bindings_from_str, parse_text_kernel,
+    parse_text_kernel_from_str, BodyBinding, DeltaAtEntry, FrameAssociation, KernelDate,
+    LeapSecondsKernel, TextKernelContent, TextKernelError,
 };

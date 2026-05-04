@@ -7,6 +7,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Public text-kernel content parser APIs:
+  `parse_text_kernel`, `parse_text_kernel_from_str`, `TextKernelContent`,
+  `LeapSecondsKernel`, `DeltaAtEntry`, `KernelDate`, and
+  `FrameAssociation`. The fuller parser exposes `KPL/LSK` leapseconds
+  `DELTET/*` values and the supported Earth→ITRF93 FK association in
+  addition to existing `NAIF_BODY_NAME` / `NAIF_BODY_CODE` bindings.
+- CSpice parity coverage for LSK kernel-pool counts and values via
+  `dtpool` / `gdpool`, including exact `DELTET/DELTA_AT` date-to-ET
+  conversion, plus Earth→ITRF93 frame association checks via
+  `cnmfrm` / `cidfrm` / `namfrm`.
+
+### Changed
+
+- `parse_body_bindings` and `parse_body_bindings_from_str` are now thin
+  shims over the full text-kernel parser. They still return only body
+  bindings, but malformed supported content such as an incomplete
+  `DELTET/*` LSK block now returns `TextKernelError` instead of being
+  silently ignored.
+- The spicekit-bench furnsh-style backend now retains supported LSK and
+  Earth→ITRF93 FK text-kernel content and returns a structured
+  `UnsupportedTextKernel` error for otherwise-empty unsupported text
+  kernels instead of placing them in a generic ignored bucket.
+
 ## [0.2.1] — 2026-05-03
 
 ### Fixed
