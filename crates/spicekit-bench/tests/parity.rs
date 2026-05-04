@@ -1,11 +1,9 @@
 //! Bit-for-bit-within-tolerance parity tests against CSpice.
 //!
-//! Ported verbatim from adam-core's
-//! `src/adam_core/utils/tests/test_spice_backend.py`. The adam-core
-//! suite uses `RustBackend` as the thing under test; here we target
-//! spicekit directly via the local `Backend` struct in `lib.rs`. Same
-//! inputs, same tolerances, same kernels (resolved at runtime from
-//! the `naif-*` PyPI packages via `kernels::default_kernel_paths`).
+//! These tests target spicekit directly via the local `Backend` struct
+//! in `lib.rs`, using the same inputs, tolerances, and kernels
+//! resolved at runtime from the `naif-*` PyPI packages via
+//! `kernels::default_kernel_paths`.
 //!
 //! Skipped when the `cspice` feature is off (e.g. Apple Silicon).
 

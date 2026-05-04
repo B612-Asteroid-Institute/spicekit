@@ -1,6 +1,6 @@
 //! Side-by-side microbenchmark: spicekit vs. CSpice.
 //!
-//! Loads adam-core's canonical kernel set (leapseconds + DE440 + three
+//! Loads the canonical benchmark kernel set (leapseconds + DE440 + three
 //! Earth EOP PCKs + Earth ITRF93 binary PCK, resolved from the
 //! `naif-*` PyPI packages via `crates/spicekit-bench/src/kernels.rs`),
 //! then measures the same operations through both backends on matched
@@ -14,8 +14,7 @@
 //! Apple Silicon: cspice-sys 1.0.4's `downloadcspice` feature checks
 //! `target_arch = "arm"` and fetches the x86_64 archive, so the
 //! default feature set fails to link. Point `CSPICE_DIR` at an arm64
-//! CSpice archive (e.g. adam-core's `vendor/cspice/`) and it skips the
-//! download:
+//! CSpice archive and it skips the download:
 //!     CSPICE_DIR=/path/to/cspice \
 //!       SPICEKIT_BENCH_KERNEL_LEAPSECONDS=... \
 //!       ... (5 more SPICEKIT_BENCH_KERNEL_* env vars) \
