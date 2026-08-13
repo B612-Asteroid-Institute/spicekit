@@ -110,8 +110,7 @@ impl PckType2 {
     }
 
     fn evaluate(&self, et: f64) -> Result<[f64; 6], PckError> {
-        let raw_idx = ((et - self.init) / self.intlen).floor() as isize;
-        let idx = raw_idx.clamp(0, self.n_records as isize - 1) as usize;
+        let idx = self.record_index(et)?;
         let rec_start = self.start_addr + (idx * self.rsize) as u32;
         let rec_end = rec_start + self.rsize as u32 - 1;
         let rec = self.file.doubles_native(rec_start, rec_end)?;
@@ -141,6 +140,26 @@ impl PckType2 {
             dang[1] * inv_r,
             dang[2] * inv_r,
         ])
+    }
+
+    fn record_index(&self, et: f64) -> Result<usize, PckError> {
+        let raw_idx = ((et - self.init) / self.intlen).floor() as isize;
+        let mut idx = raw_idx.clamp(0, self.n_records as isize - 1) as usize;
+
+        // INIT/INTLEN normally identifies the covering record. Some operational
+        // Earth PCKs contain a small mismatch between that trailer grid and the
+        // authoritative MID/RADIUS bounds stored in each record. Correct the
+        // estimate by one record so evaluation never extrapolates a Chebyshev
+        // series beyond its interval.
+        let rec_start = self.start_addr + (idx * self.rsize) as u32;
+        let bounds = self.file.doubles_native(rec_start, rec_start + 1)?;
+        let (mid, radius) = (bounds[0], bounds[1]);
+        if et > mid + radius && idx + 1 < self.n_records {
+            idx += 1;
+        } else if et < mid - radius && idx > 0 {
+            idx -= 1;
+        }
+        Ok(idx)
     }
 }
 
@@ -606,6 +625,71 @@ mod tests {
         tmp.write_all(&all).unwrap();
         tmp.flush().unwrap();
         tmp
+    }
+
+    #[test]
+    fn record_selection_corrects_trailer_grid_drift() {
+        let records = [(25.0, 25.0, [1.0, 0.0]), (100.0, 50.0, [2.0, 0.0])];
+        let n_coef = records[0].2.len();
+        let rsize = 2 + 3 * n_coef;
+        let doubles_per_record = (RECORD_BYTES / DOUBLE_BYTES) as u32;
+        let start_addr = 1 + 3 * doubles_per_record;
+        let mut data = Vec::new();
+        for (mid, radius, ra) in records {
+            data.extend_from_slice(&[mid, radius]);
+            data.extend_from_slice(&ra);
+            data.extend_from_slice(&[0.0, 0.0]);
+            data.extend_from_slice(&[0.0, 0.0]);
+        }
+        data.extend_from_slice(&[0.0, 100.0, rsize as f64, records.len() as f64]);
+        let end_addr = start_addr + data.len() as u32 - 1;
+
+        let mut record1 = vec![0u8; RECORD_BYTES];
+        record1[0..8].copy_from_slice(b"DAF/PCK ");
+        record1[8..12].copy_from_slice(&2u32.to_le_bytes());
+        record1[12..16].copy_from_slice(&5u32.to_le_bytes());
+        record1[16..76].fill(b' ');
+        record1[76..80].copy_from_slice(&2u32.to_le_bytes());
+        record1[80..84].copy_from_slice(&2u32.to_le_bytes());
+        record1[88..96].copy_from_slice(b"LTL-IEEE");
+
+        let mut record2 = vec![0u8; RECORD_BYTES];
+        record2[16..24].copy_from_slice(&1.0f64.to_le_bytes());
+        let summary = 24;
+        record2[summary..summary + 8].copy_from_slice(&0.0f64.to_le_bytes());
+        record2[summary + 8..summary + 16].copy_from_slice(&200.0f64.to_le_bytes());
+        let integers = summary + 2 * DOUBLE_BYTES;
+        for (offset, value) in [
+            ITRF93_FRAME,
+            ECLIPJ2000_FRAME,
+            2,
+            start_addr as i32,
+            end_addr as i32,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            record2[integers + offset * 4..integers + (offset + 1) * 4]
+                .copy_from_slice(&value.to_le_bytes());
+        }
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&record1);
+        bytes.extend_from_slice(&record2);
+        bytes.extend_from_slice(&vec![b' '; RECORD_BYTES]);
+        for value in data {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        while bytes.len() % RECORD_BYTES != 0 {
+            bytes.push(0);
+        }
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let pck = PckFile::open(tmp.path()).expect("open");
+        assert_eq!(pck.euler_state(ITRF93_FRAME, 25.0).unwrap()[0], 1.0);
+        assert_eq!(pck.euler_state(ITRF93_FRAME, 75.0).unwrap()[0], 2.0);
     }
 
     #[test]
