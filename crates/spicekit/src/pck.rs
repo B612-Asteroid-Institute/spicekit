@@ -35,7 +35,6 @@ use std::path::Path;
 use thiserror::Error;
 
 use crate::daf::{DafError, DafFile};
-use crate::spk::cheby3_val_and_deriv;
 
 #[derive(Debug, Error)]
 pub enum PckError {
@@ -128,24 +127,52 @@ impl PckType2 {
         let dec_c = &rec[2 + n..2 + 2 * n];
         let w_c = &rec[2 + 2 * n..2 + 3 * n];
 
-        // Three-channel evaluation with shared T_k(s) / dT_k/ds basis
-        // recurrence — mathematically equivalent to three independent
-        // calls but ~3x cheaper on the recurrence half of the work.
-        let (ang, dang) = cheby3_val_and_deriv(ra_c, dec_c, w_c, s);
-        let inv_r = 1.0 / radius;
+        // PCKE02 delegates Type 2 evaluation to SPKE02/CHBINT. Preserve
+        // CHBINT's backward recurrence and arithmetic order: the tiny
+        // differences from a forward Chebyshev recurrence are observable in
+        // time-varying terrestrial frame transformations.
+        let (ra, dra) = cheby_value_and_derivative(ra_c, s, radius);
+        let (dec, ddec) = cheby_value_and_derivative(dec_c, s, radius);
+        let (w, dw) = cheby_value_and_derivative(w_c, s, radius);
         Ok([
-            ang[0],
-            ang[1],
-            ang[2],
-            dang[0] * inv_r,
-            dang[1] * inv_r,
-            dang[2] * inv_r,
+            ra,
+            dec,
+            // CSPICE PCKE02 has historically reduced the third Euler angle
+            // before frame rotation while preserving its derivative.
+            w % std::f64::consts::TAU,
+            dra,
+            ddec,
+            dw,
         ])
     }
 }
 
 pub struct PckFile {
     segments: Vec<PckSegment>,
+}
+
+/// Evaluate one Type 2 PCK Chebyshev series using CSPICE CHBINT order.
+#[inline]
+fn cheby_value_and_derivative(coefficients: &[f64], s: f64, radius: f64) -> (f64, f64) {
+    let mut w0 = 0.0;
+    let mut w1 = 0.0;
+    let mut dw0 = 0.0;
+    let mut dw1 = 0.0;
+    let two_s = 2.0 * s;
+
+    for &coefficient in coefficients[1..].iter().rev() {
+        let w2 = w1;
+        w1 = w0;
+        w0 = coefficient + (two_s * w1 - w2);
+
+        let dw2 = dw1;
+        dw1 = dw0;
+        dw0 = w1 * 2.0 + dw1 * two_s - dw2;
+    }
+
+    let value = coefficients[0] + (s * w0 - w1);
+    let derivative = (w0 + s * dw0 - dw1) / radius;
+    (value, derivative)
 }
 
 impl PckFile {
@@ -487,6 +514,34 @@ mod tests {
         assert!(matches!(err, PckError::NoCoverage { .. }));
         let err_neg = pck.euler_state(ITRF93_FRAME, -100.0).unwrap_err();
         assert!(matches!(err_neg, PckError::NoCoverage { .. }));
+    }
+
+    #[test]
+    fn chebyshev_evaluation_matches_cspice_chbint_order() {
+        let coefficients = [0.3, -1.2, 0.7, 0.4, -0.15, 0.02];
+        let (value, derivative) = cheby_value_and_derivative(&coefficients, 0.123_456_789, 1.0);
+        assert_eq!(value.to_bits(), 0xbfe9_5acd_0440_4980);
+        assert_eq!(derivative.to_bits(), 0xbff9_c9fe_ea22_eb14);
+    }
+
+    #[test]
+    fn third_euler_angle_is_reduced_modulo_two_pi() {
+        let tau = std::f64::consts::TAU;
+        let tmp = build_single_segment_pck(
+            ITRF93_FRAME,
+            ECLIPJ2000_FRAME,
+            -10.0,
+            10.0,
+            0.0,
+            10.0,
+            &[0.0, 0.0],
+            &[0.0, 0.0],
+            &[tau + 0.25, 0.5],
+        );
+        let pck = PckFile::open(tmp.path()).expect("open");
+        let state = pck.euler_state(ITRF93_FRAME, 0.0).expect("eval");
+        assert!((state[2] - 0.25).abs() < 1e-15);
+        assert!((state[5] - 0.05).abs() < 1e-15);
     }
 
     #[test]
