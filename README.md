@@ -52,6 +52,9 @@ and frame evaluation:
 - **Built-in NAIF body table**: the 692-entry name ↔ ID map mirrored from
   CSpice's `zzidmap.c`, with case-insensitive whitespace-tolerant
   matching.
+- **Kernel pool**: `KernelPool` furnishes a set of SPK and binary PCK
+  files with CSpice `furnsh` priority and resolves every epoch across
+  the whole set, so a batch that straddles two kernels works.
 
 ## Non-goals
 

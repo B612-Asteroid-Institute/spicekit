@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `KernelPool`, a furnished set of SPK and binary PCK files with CSpice
+  `furnsh` priority. Load order decides, so a later `furnish` wins where
+  coverage overlaps. Every epoch resolves against the whole set, so a
+  batch that straddles two kernels works and an uncovered epoch raises a
+  typed error naming it. SPK lookups chain across files the way `spkgeo`
+  does, and `spk_coverage` and `pck_coverage` give the merged windows.
+
 ## [0.2.2] — 2026-05-04
 
 ### Added
