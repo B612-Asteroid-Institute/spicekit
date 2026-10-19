@@ -31,8 +31,9 @@ const ORDERS: [[usize; 3]; 6] = [
     [2, 1, 0],
 ];
 
-/// The historical, high precision and predict PCKs, in that order.
-fn eop() -> Option<[PathBuf; 3]> {
+/// The historical, high precision and predict PCKs, and a pool with
+/// all three furnished in that order.
+fn eop() -> Option<([PathBuf; 3], KernelPool)> {
     let find = |name: &str| {
         let vars = [
             format!("SPICEKIT_TEST_KERNEL_{name}"),
@@ -57,12 +58,17 @@ fn eop() -> Option<[PathBuf; 3]> {
         );
         return None;
     }
-    Some(found.map(|path| path.expect("checked above")))
+    let files = found.map(|path| path.expect("checked above"));
+    let mut pool = KernelPool::new();
+    for path in &files {
+        pool.furnish(path).expect("furnish");
+    }
+    Some((files, pool))
 }
 
 #[test]
 fn a_batch_across_the_three_files_works_in_every_furnish_order() {
-    let Some(files) = eop() else { return };
+    let Some((files, _)) = eop() else { return };
     let ets = [ET_1978, ET_2020, ET_2026];
     for order in ORDERS {
         let mut pool = KernelPool::new();
@@ -92,11 +98,7 @@ fn a_batch_across_the_three_files_works_in_every_furnish_order() {
 
 #[test]
 fn an_epoch_before_1962_fails_and_names_its_index() {
-    let Some(files) = eop() else { return };
-    let mut pool = KernelPool::new();
-    for path in &files {
-        pool.furnish(path).unwrap();
-    }
+    let Some((_, pool)) = eop() else { return };
     let err = pool
         .pck_sxform_batch(ITRF93, NaifFrame::J2000, &[ET_2020, ET_1952])
         .expect_err("1952 predates every Earth orientation kernel");
@@ -109,22 +111,23 @@ fn an_epoch_before_1962_fails_and_names_its_index() {
 
 #[test]
 fn coverage_is_the_merged_union_of_the_loaded_files() {
-    let Some(files) = eop() else { return };
-    let mut pool = KernelPool::new();
-    pool.furnish(&files[0]).unwrap();
-    let historical = pool.pck_coverage(ITRF93);
-    assert_eq!(historical.len(), 1);
-
-    for path in &files[1..] {
-        pool.furnish(path).unwrap();
-    }
+    let Some((files, mut pool)) = eop() else {
+        return;
+    };
     let all = pool.pck_coverage(ITRF93);
     assert_eq!(all.len(), 1, "the three files form one continuous window");
-    assert!(all[0].0 <= historical[0].0 && all[0].1 > historical[0].1);
     for et in [ET_1978, ET_2020, ET_2026] {
         assert!(all[0].0 <= et && et <= all[0].1);
     }
 
+    // Dropping a file shortens the union. The historical file alone
+    // still reports one window, starting where the union starts.
     assert!(pool.unload(&files[2]));
-    assert!(pool.pck_coverage(ITRF93)[0].1 < all[0].1);
+    let without_predict = pool.pck_coverage(ITRF93);
+    assert!(without_predict[0].1 < all[0].1);
+    assert!(pool.unload(&files[1]));
+    let historical = pool.pck_coverage(ITRF93);
+    assert_eq!(historical.len(), 1);
+    assert_eq!(historical[0].0, all[0].0);
+    assert!(historical[0].1 < without_predict[0].1);
 }

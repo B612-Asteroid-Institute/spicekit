@@ -10,26 +10,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - `KernelPool`, a furnished set of SPK and binary PCK files with CSpice
-  `furnsh` priority. Load order decides, so a later `furnish` wins where
-  coverage overlaps, and furnishing a path already in the pool reloads
-  it on top. Every epoch resolves against the whole set, so a
-  batch that straddles two kernels works and an uncovered epoch raises a
-  typed error naming it. SPK lookups chain across files the way `spkgeo`
-  does. Each step of the chain picks its segment the way `spksfs` does,
-  taking the newest file that holds any segment for the body at that
-  epoch and the last such segment inside the file. A direct pair in an
-  older file therefore loses to a chain in a newer one, as it does in
-  CSpice. `spk_coverage` and `pck_coverage` give the merged windows.
+  `furnsh` priority, resolving each epoch across the whole set and
+  chaining SPK lookups the way `spkgeo` and `spksfs` do.
 
 ### Changed
 
-- `SpkFile::state` now returns the last matching segment in file order
-  when several segments for one `(target, center)` pair cover the same
-  epoch. It returned the first before. CSpice `spksfs` searches a file
-  back to front, so the new choice is the CSpice one. Files whose
-  segments do not overlap are unaffected, which includes the DE-series
-  ephemerides. `PckFile` already searched back to front and is
-  unchanged.
+- `SpkFile::state` now picks the last matching segment in file order
+  rather than the first, which is the segment CSpice `spksfs` picks.
 
 ## [0.2.2] — 2026-05-04
 

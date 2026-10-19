@@ -49,9 +49,7 @@ pub enum PoolError {
     Pck(#[from] PckError),
 }
 
-/// Merged epoch windows per key. Only the coverage calls read these.
-/// Resolution reads the file's segments in file order instead, because
-/// merging loses the order CSPICE picks by.
+/// Merged epoch windows per key, read only by the coverage calls.
 type Coverage<K> = Vec<(K, Vec<(f64, f64)>)>;
 
 /// A furnished SPK and the merged windows of each body it targets.
@@ -73,18 +71,15 @@ enum Kernel {
 
 /// A set of furnished kernels resolved the way CSPICE resolves one.
 ///
-/// Priority is load order, so the most recently furnished file is
-/// searched first and wins wherever two files overlap. Resolution is
-/// per epoch and never per batch, so a batch succeeds whenever the
-/// union of the loaded files covers it, and an epoch nothing covers is
-/// a typed error naming that epoch. SPK lookups chain across files the
-/// way `spkgeo_c` does, walking target and centre toward the solar
-/// system barycentre and meeting at the first common node. Each step
-/// of that walk picks a segment the way `spksfs` does, taking the
-/// newest file that holds any segment for the body at the epoch and
-/// the last such segment inside it. Evaluation runs through the
-/// single-file readers, which stay the right choice when one file is
-/// in play.
+/// Priority is load order. A lookup takes the newest furnished file
+/// holding a segment that covers the body at the epoch, and the last
+/// such segment in file order, the way `spksfs` does. SPK lookups
+/// chain the way `spkgeo_c` does, walking target and centre toward the
+/// solar system barycentre and meeting at the first common node.
+/// Resolution is per epoch and never per batch, so a batch succeeds
+/// whenever the loaded set covers it, and an epoch nothing covers is a
+/// typed error naming that epoch. The merged windows exist only for
+/// the coverage queries.
 #[derive(Default)]
 pub struct KernelPool {
     kernels: Vec<(PathBuf, Kernel)>,
@@ -506,9 +501,8 @@ mod tests {
     use tempfile::NamedTempFile;
 
     /// An SPK of constant-state segments, one per
-    /// `(target, center, start, end, x)` tuple. Coefficients past the
-    /// constant term are zero, so a segment reads `x` on the x axis
-    /// everywhere inside its window.
+    /// `(target, center, start, end, x)` tuple. A segment reads `x` on
+    /// the x axis everywhere inside its window.
     fn spk(segments: &[(i32, i32, f64, f64, f64)]) -> NamedTempFile {
         let mut writer = SpkWriter::new_spk("pool-test");
         for &(target, center, start, end, x) in segments {
@@ -541,26 +535,36 @@ mod tests {
         file
     }
 
+    /// Pins `furnsh` priority, where load order decides and furnishing
+    /// a loaded path again puts it back on top.
     #[test]
-    fn later_furnish_wins_where_coverage_overlaps() {
-        let low = spk(&[(1_000, 0, 0.0, 100.0, 1.0)]);
-        let high = spk(&[(1_000, 0, 50.0, 200.0, 2.0)]);
+    fn later_furnish_wins_and_refurnishing_promotes() {
+        let a = spk(&[(1_000, 0, 0.0, 100.0, 1.0)]);
+        let b = spk(&[(1_000, 0, 50.0, 200.0, 2.0)]);
         let mut pool = KernelPool::new();
-        pool.furnish(low.path()).unwrap();
-        pool.furnish(high.path()).unwrap();
-        assert_eq!(pool.loaded(), vec![low.path(), high.path()]);
+        pool.furnish(a.path()).unwrap();
+        pool.furnish(b.path()).unwrap();
+        assert_eq!(pool.loaded(), vec![a.path(), b.path()]);
         assert_eq!(pool.spk_state(1_000, 0, 75.0).unwrap()[0], 2.0);
         assert_eq!(pool.spk_state(1_000, 0, 25.0).unwrap()[0], 1.0);
         assert_eq!(pool.spk_coverage(1_000), vec![(0.0, 200.0)]);
 
-        // Unloading the winner hands the epoch back to the other file.
-        assert!(pool.unload(high.path()));
+        pool.furnish(a.path()).unwrap();
+        assert_eq!(pool.loaded(), vec![b.path(), a.path()]);
         assert_eq!(pool.spk_state(1_000, 0, 75.0).unwrap()[0], 1.0);
-        assert!(!pool.unload(high.path()));
+
+        // The promotion moved the entry, it did not duplicate it, and
+        // unloading the winner hands the epoch back to the other file.
+        assert!(pool.unload(a.path()));
+        assert_eq!(pool.loaded(), vec![b.path()]);
+        assert_eq!(pool.spk_state(1_000, 0, 75.0).unwrap()[0], 2.0);
+        assert!(!pool.unload(a.path()));
         pool.clear();
         assert!(pool.spk_state(1_000, 0, 75.0).is_err());
     }
 
+    /// Pins per epoch resolution, where a batch spanning two files
+    /// works and an uncovered epoch is named by index and by ET.
     #[test]
     fn every_epoch_resolves_on_its_own() {
         let early = spk(&[(1_000, 0, 0.0, 100.0, 1.0)]);
@@ -575,11 +579,9 @@ mod tests {
                 .spk_state_batch(1_000, 0, NaifFrame::J2000, &ets)
                 .expect("the batch spans both files");
             assert_eq!((batch[0][0], batch[1][0]), (1.0, 2.0));
-            // The batch answer is the single-epoch answer, epoch by epoch.
             for (i, &et) in ets.iter().enumerate() {
                 assert_eq!(batch[i], pool.spk_state(1_000, 0, et).unwrap());
             }
-            // An epoch no file reaches is named by index and by ET.
             let err = pool
                 .spk_state_batch(1_000, 0, NaifFrame::J2000, &[50.0, 150.0])
                 .expect_err("150 falls in the gap between the two files");
@@ -590,51 +592,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn chains_across_files_and_meets_at_the_common_node() {
-        let inner = spk(&[(1_000, 399, 0.0, 100.0, 3.0), (2_000, 399, 0.0, 100.0, 7.0)]);
-        let outer = spk(&[(399, 0, 0.0, 100.0, 10.0)]);
-        let mut pool = KernelPool::new();
-        pool.furnish(inner.path()).unwrap();
-        pool.furnish(outer.path()).unwrap();
-
-        // No file holds the pair. The chain is 1000 to 399 to 0.
-        assert_eq!(pool.spk_state(1_000, 0, 50.0).unwrap()[0], 13.0);
-        // The reverse pair is the negation.
-        assert_eq!(pool.spk_state(0, 1_000, 50.0).unwrap()[0], -13.0);
-        // Both bodies hang off 399, so the walks meet short of the barycentre.
-        assert_eq!(pool.spk_state(1_000, 2_000, 50.0).unwrap()[0], -4.0);
-        // A direct pair answers directly, and a body is zero against itself.
-        assert_eq!(pool.spk_state(1_000, 399, 50.0).unwrap()[0], 3.0);
-        assert_eq!(pool.spk_state(399, 399, 50.0).unwrap(), [0.0; 6]);
-        // One file alone cannot answer the chained pair.
-        let mut partial = KernelPool::new();
-        partial.furnish(inner.path()).unwrap();
-        assert!(partial.spk_state(1_000, 0, 50.0).is_err());
-    }
-
+    /// Pins `spkgeo` chaining, where the newest file holding a segment
+    /// for the body sets the route, so its chain beats an older direct
+    /// pair and the two walks meet at the first common node.
     #[test]
     fn a_newer_chain_beats_an_older_direct_pair() {
-        // CSpice N0067 answers 13 here. The newest file holding a
-        // segment for 1000 routes through 399, so the older direct
-        // pair is never asked.
-        let direct = spk(&[(1_000, 0, 0.0, 100.0, 1.0)]);
-        let chained = spk(&[(1_000, 399, 0.0, 100.0, 3.0), (399, 0, 0.0, 100.0, 10.0)]);
+        // CSpice N0067 answers 13 for (1000, 0) in this set.
+        let older = spk(&[(1_000, 0, 0.0, 100.0, 1.0), (2_000, 399, 0.0, 100.0, 7.0)]);
+        let newer = spk(&[(1_000, 399, 0.0, 100.0, 3.0), (399, 0, 0.0, 100.0, 10.0)]);
         let mut pool = KernelPool::new();
-        pool.furnish(direct.path()).unwrap();
-        pool.furnish(chained.path()).unwrap();
+        pool.furnish(older.path()).unwrap();
+        pool.furnish(newer.path()).unwrap();
         assert_eq!(pool.spk_state(1_000, 0, 50.0).unwrap()[0], 13.0);
         assert_eq!(pool.spk_state(0, 1_000, 50.0).unwrap()[0], -13.0);
         let batch = pool
             .spk_state_batch(1_000, 0, NaifFrame::J2000, &[25.0, 75.0])
             .expect("both epochs are covered");
         assert_eq!((batch[0][0], batch[1][0]), (13.0, 13.0));
+        // 1000 and 2000 both hang off 399, so the walks cross files and
+        // meet there, short of the barycentre.
+        assert_eq!(pool.spk_state(1_000, 2_000, 50.0).unwrap()[0], -4.0);
+        assert_eq!(pool.spk_state(399, 399, 50.0).unwrap(), [0.0; 6]);
 
         // Furnished the other way round the direct pair is newest, and
         // CSpice answers 1.
         let mut reversed = KernelPool::new();
-        reversed.furnish(chained.path()).unwrap();
-        reversed.furnish(direct.path()).unwrap();
+        reversed.furnish(newer.path()).unwrap();
+        reversed.furnish(older.path()).unwrap();
         assert_eq!(reversed.spk_state(1_000, 0, 50.0).unwrap()[0], 1.0);
         let batch = reversed
             .spk_state_batch(1_000, 0, NaifFrame::J2000, &[25.0, 75.0])
@@ -642,13 +626,10 @@ mod tests {
         assert_eq!((batch[0][0], batch[1][0]), (1.0, 1.0));
     }
 
+    /// Pins the `spksfs` segment rule, where the last segment covering
+    /// the epoch inside the winning file sets the centre.
     #[test]
     fn the_last_segment_covering_the_epoch_picks_the_centre() {
-        // Three segments written in this order. At ET 50 the last one
-        // covering the epoch is the 301 segment, so CSpice routes
-        // through 301 and answers 25. Merged per-pair windows answer
-        // 13 instead, because the last 399 segment sits later in the
-        // file.
         let bodies = spk(&[
             (1_000, 399, 0.0, 100.0, 3.0),
             (1_000, 301, 0.0, 100.0, 5.0),
@@ -658,6 +639,7 @@ mod tests {
         let mut pool = KernelPool::new();
         pool.furnish(bodies.path()).unwrap();
         pool.furnish(centers.path()).unwrap();
+        // At ET 50 the last covering segment routes through 301.
         assert_eq!(pool.spk_state(1_000, 0, 50.0).unwrap()[0], 25.0);
         // Past 100 only the third segment covers, so the centre is 399.
         assert_eq!(pool.spk_state(1_000, 0, 250.0).unwrap()[0], 17.0);
@@ -665,23 +647,8 @@ mod tests {
         assert_eq!(pool.spk_coverage(1_000), vec![(0.0, 100.0), (200.0, 300.0)]);
     }
 
-    #[test]
-    fn furnishing_a_loaded_path_again_promotes_it() {
-        // A, then B, then A. CSpice reloads A on top, so A wins.
-        let a = spk(&[(1_000, 0, 0.0, 100.0, 1.0)]);
-        let b = spk(&[(1_000, 0, 0.0, 100.0, 2.0)]);
-        let mut pool = KernelPool::new();
-        pool.furnish(a.path()).unwrap();
-        pool.furnish(b.path()).unwrap();
-        assert_eq!(pool.spk_state(1_000, 0, 50.0).unwrap()[0], 2.0);
-        pool.furnish(a.path()).unwrap();
-        assert_eq!(pool.loaded(), vec![b.path(), a.path()]);
-        assert_eq!(pool.spk_state(1_000, 0, 50.0).unwrap()[0], 1.0);
-        // The promotion moved the entry, it did not duplicate it.
-        assert!(pool.unload(a.path()));
-        assert_eq!(pool.loaded(), vec![b.path()]);
-    }
-
+    /// Pins the pool contents, which are SPK and binary PCK only, so a
+    /// text kernel is rejected instead of silently ignored.
     #[test]
     fn a_text_kernel_is_rejected() {
         let mut text = NamedTempFile::new().unwrap();

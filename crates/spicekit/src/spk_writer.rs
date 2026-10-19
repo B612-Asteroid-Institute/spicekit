@@ -587,10 +587,9 @@ mod tests {
     /// (cache-cold) reader. Prior to the `cacheable` flag, querying
     /// one segment's exclusive range would cache it, then a query in
     /// the overlap region would return that segment instead of the one
-    /// `try_direct` deterministically picks. The expected winner in
-    /// the overlap changed when `try_direct` moved to the last
-    /// matching segment in file order, which is what CSpice `spksfs`
-    /// picks. The cache rule under test is unchanged.
+    /// `try_direct` deterministically picks. The expected winner is
+    /// now the last matching segment in file order, which is what
+    /// CSpice `spksfs` picks.
     #[test]
     fn overlapping_segments_do_not_corrupt_mru_cache() {
         // Segment A covers ET [0, 9], encodes x = 100 + t.
