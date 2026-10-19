@@ -49,15 +49,15 @@ pub enum PoolError {
     Pck(#[from] PckError),
 }
 
-/// Merged epoch windows per key, the key whose last segment comes
-/// latest in the file first. That is the order CSPICE prefers inside
-/// one file, and across files the pool walks newest furnished first.
+/// Merged epoch windows per key. Only the coverage calls read these.
+/// Resolution reads the file's segments in file order instead, because
+/// merging loses the order CSPICE picks by.
 type Coverage<K> = Vec<(K, Vec<(f64, f64)>)>;
 
-/// A furnished SPK and the `(target, center)` pairs it covers.
+/// A furnished SPK and the merged windows of each body it targets.
 struct SpkEntry {
     file: SpkFile,
-    pairs: Coverage<(i32, i32)>,
+    targets: Coverage<i32>,
 }
 
 /// A furnished binary PCK and the body-fixed frames it covers.
@@ -79,9 +79,12 @@ enum Kernel {
 /// union of the loaded files covers it, and an epoch nothing covers is
 /// a typed error naming that epoch. SPK lookups chain across files the
 /// way `spkgeo_c` does, walking target and centre toward the solar
-/// system barycentre and meeting at the first common node. Evaluation
-/// runs through the single-file readers, which are unchanged and stay
-/// the right choice when one file is in play.
+/// system barycentre and meeting at the first common node. Each step
+/// of that walk picks a segment the way `spksfs` does, taking the
+/// newest file that holds any segment for the body at the epoch and
+/// the last such segment inside it. Evaluation runs through the
+/// single-file readers, which stay the right choice when one file is
+/// in play.
 #[derive(Default)]
 pub struct KernelPool {
     kernels: Vec<(PathBuf, Kernel)>,
@@ -95,13 +98,12 @@ impl KernelPool {
 
     /// Load a kernel and give it the highest priority. The type comes
     /// from the DAF id word, so SPK and binary PCK need no hint and
-    /// anything else is rejected. A path already in the pool keeps the
-    /// priority it has, like `furnsh_c` on an open DAF.
+    /// anything else is rejected. A path already in the pool is read
+    /// again and moves to the top, the way `furnsh_c` reloads it. The
+    /// read happens before the old copy is dropped, so a furnish that
+    /// fails leaves the pool as it was.
     pub fn furnish<P: AsRef<Path>>(&mut self, path: P) -> Result<(), PoolError> {
         let path = path.as_ref();
-        if self.kernels.iter().any(|(loaded, _)| loaded == path) {
-            return Ok(());
-        }
         let kernel = match daf_idword(path)? {
             Some(word) if word.starts_with(b"DAF/SPK") => {
                 Kernel::Spk(SpkEntry::new(SpkFile::open(path)?))
@@ -115,6 +117,7 @@ impl KernelPool {
                 })
             }
         };
+        self.kernels.retain(|(loaded, _)| loaded != path);
         self.kernels.push((path.to_path_buf(), kernel));
         Ok(())
     }
@@ -167,7 +170,7 @@ impl KernelPool {
     pub fn spk_coverage(&self, body: i32) -> Vec<(f64, f64)> {
         let mut raw = Vec::new();
         for entry in self.spks() {
-            for (_, windows) in entry.pairs.iter().filter(|((t, _), _)| *t == body) {
+            for (_, windows) in entry.targets.iter().filter(|(t, _)| *t == body) {
                 raw.extend(windows.iter().copied());
             }
         }
@@ -254,14 +257,6 @@ impl KernelPool {
         })
     }
 
-    /// The highest priority file that holds the pair at `et`.
-    fn spk_for(&self, target: i32, center: i32, et: f64) -> Option<&SpkEntry> {
-        self.spks().find(|entry| {
-            (entry.pairs.iter())
-                .any(|(key, windows)| *key == (target, center) && covers(windows, et))
-        })
-    }
-
     fn state(
         &self,
         target: i32,
@@ -271,14 +266,6 @@ impl KernelPool {
     ) -> Result<[f64; 6], PoolError> {
         if target == center {
             return Ok([0.0; 6]);
-        }
-        if let Some(entry) = self.spk_for(target, center, et) {
-            return Ok(entry.file.state(target, center, et)?);
-        }
-        if let Some(entry) = self.spk_for(center, target, et) {
-            let mut state = entry.file.state(center, target, et)?;
-            state.iter_mut().for_each(|v| *v = -*v);
-            return Ok(state);
         }
         self.chain(target, center, et)?
             .ok_or(PoolError::SpkInsufficientData {
@@ -290,10 +277,13 @@ impl KernelPool {
     }
 
     /// Walk both bodies toward the barycentre and meet at the first
-    /// common node, the way `spkgeo_c` does.
+    /// common node, the way `spkgeo_c` does. A direct pair is not a
+    /// special case. It is the walk reaching `center` on its first
+    /// step, which only happens when the winning segment for `target`
+    /// has that centre.
     fn chain(&self, target: i32, center: i32, et: f64) -> Result<Option<[f64; 6]>, PoolError> {
-        let (up, up_states) = self.walk(target, center, et)?;
-        let (down, down_states) = self.walk(center, target, et)?;
+        let (up, up_states) = self.walk(target, &[center], et)?;
+        let (down, down_states) = self.walk(center, &up, et)?;
         for (m, node) in down.iter().enumerate() {
             let Some(k) = up.iter().position(|n| n == node) else {
                 continue;
@@ -316,14 +306,19 @@ impl KernelPool {
 
     /// Nodes visited walking from `body` toward the barycentre, and the
     /// state of each node relative to the next. The walk stops at the
-    /// barycentre, at `stop`, at a repeated node, or where no loaded
-    /// SPK covers the current node.
-    fn walk(&self, body: i32, stop: i32, et: f64) -> Result<(Vec<i32>, Vec<[f64; 6]>), PoolError> {
+    /// barycentre, at any node in `stop`, at a repeated node, or where
+    /// no loaded SPK covers the current node.
+    fn walk(
+        &self,
+        body: i32,
+        stop: &[i32],
+        et: f64,
+    ) -> Result<(Vec<i32>, Vec<[f64; 6]>), PoolError> {
         let mut nodes = vec![body];
         let mut states = Vec::new();
         while nodes.len() <= MAX_CHAIN {
             let current = nodes[nodes.len() - 1];
-            if current == 0 || current == stop {
+            if current == 0 || stop.contains(&current) {
                 break;
             }
             let Some((entry, next)) = self.step(current, et) else {
@@ -338,13 +333,12 @@ impl KernelPool {
         Ok((nodes, states))
     }
 
-    /// The file and centre a chain advances to from `body` at `et`.
+    /// The file and centre a chain advances to from `body` at `et`,
+    /// chosen the way `spksfs` chooses. The newest file holding any
+    /// segment for `body` at `et` decides, whatever centres the older
+    /// files offer.
     fn step(&self, body: i32, et: f64) -> Option<(&SpkEntry, i32)> {
-        self.spks().find_map(|entry| {
-            let (key, _) = (entry.pairs.iter())
-                .find(|((target, _), windows)| *target == body && covers(windows, et))?;
-            Some((entry, key.1))
-        })
+        (self.spks()).find_map(|entry| entry.center_for(body, et).map(|next| (entry, next)))
     }
 
     /// Euler angles and rates for `body_frame`, with the reference
@@ -366,9 +360,20 @@ impl KernelPool {
 
 impl SpkEntry {
     fn new(file: SpkFile) -> Self {
-        let rows = (file.segments().iter()).map(|s| ((s.target, s.center), (s.start_et, s.end_et)));
-        let pairs = group(rows);
-        Self { file, pairs }
+        let rows = (file.segments().iter()).map(|s| (s.target, (s.start_et, s.end_et)));
+        let targets = group(rows);
+        Self { file, targets }
+    }
+
+    /// The centre of the segment `spksfs` would pick for `body` at
+    /// `et`, which is the last segment in file order whose target is
+    /// `body` and whose window holds `et`. Asked for that pair the
+    /// reader lands on the same segment, so the chain reads the state
+    /// through [`SpkFile::state`].
+    fn center_for(&self, body: i32, et: f64) -> Option<i32> {
+        (self.file.segments().iter().rev())
+            .find(|s| s.target == body && s.start_et <= et && et <= s.end_et)
+            .map(|s| s.center)
     }
 }
 
@@ -380,14 +385,12 @@ impl PckEntry {
     }
 }
 
-/// Collect one file's segment windows into merged windows per key.
-/// Reading the segments backwards puts the key whose last segment
-/// comes latest in the file first.
-fn group<K: Copy + PartialEq>(
-    rows: impl DoubleEndedIterator<Item = (K, (f64, f64))>,
-) -> Coverage<K> {
+/// Collect one file's segment windows into merged windows per key, for
+/// the coverage calls. Order does not matter here, since a coverage
+/// answer is a union.
+fn group<K: Copy + PartialEq>(rows: impl Iterator<Item = (K, (f64, f64))>) -> Coverage<K> {
     let mut out: Coverage<K> = Vec::new();
-    for (key, window) in rows.rev() {
+    for (key, window) in rows {
         match out.iter_mut().find(|(k, _)| *k == key) {
             Some((_, windows)) => windows.push(window),
             None => out.push((key, vec![window])),
@@ -397,8 +400,8 @@ fn group<K: Copy + PartialEq>(
 }
 
 /// True when `et` lands in one of `windows`, which are sorted by start
-/// and disjoint. One binary search per file is the whole resolution
-/// cost, and a pool holds a handful of files.
+/// and disjoint. One binary search per file picks the PCK, and a pool
+/// holds a handful of files.
 fn covers(windows: &[(f64, f64)], et: f64) -> bool {
     match windows.binary_search_by(|w| w.0.partial_cmp(&et).unwrap_or(Ordering::Equal)) {
         Ok(_) => true,
@@ -545,7 +548,6 @@ mod tests {
         let mut pool = KernelPool::new();
         pool.furnish(low.path()).unwrap();
         pool.furnish(high.path()).unwrap();
-        pool.furnish(low.path()).unwrap();
         assert_eq!(pool.loaded(), vec![low.path(), high.path()]);
         assert_eq!(pool.spk_state(1_000, 0, 75.0).unwrap()[0], 2.0);
         assert_eq!(pool.spk_state(1_000, 0, 25.0).unwrap()[0], 1.0);
@@ -609,6 +611,75 @@ mod tests {
         let mut partial = KernelPool::new();
         partial.furnish(inner.path()).unwrap();
         assert!(partial.spk_state(1_000, 0, 50.0).is_err());
+    }
+
+    #[test]
+    fn a_newer_chain_beats_an_older_direct_pair() {
+        // CSpice N0067 answers 13 here. The newest file holding a
+        // segment for 1000 routes through 399, so the older direct
+        // pair is never asked.
+        let direct = spk(&[(1_000, 0, 0.0, 100.0, 1.0)]);
+        let chained = spk(&[(1_000, 399, 0.0, 100.0, 3.0), (399, 0, 0.0, 100.0, 10.0)]);
+        let mut pool = KernelPool::new();
+        pool.furnish(direct.path()).unwrap();
+        pool.furnish(chained.path()).unwrap();
+        assert_eq!(pool.spk_state(1_000, 0, 50.0).unwrap()[0], 13.0);
+        assert_eq!(pool.spk_state(0, 1_000, 50.0).unwrap()[0], -13.0);
+        let batch = pool
+            .spk_state_batch(1_000, 0, NaifFrame::J2000, &[25.0, 75.0])
+            .expect("both epochs are covered");
+        assert_eq!((batch[0][0], batch[1][0]), (13.0, 13.0));
+
+        // Furnished the other way round the direct pair is newest, and
+        // CSpice answers 1.
+        let mut reversed = KernelPool::new();
+        reversed.furnish(chained.path()).unwrap();
+        reversed.furnish(direct.path()).unwrap();
+        assert_eq!(reversed.spk_state(1_000, 0, 50.0).unwrap()[0], 1.0);
+        let batch = reversed
+            .spk_state_batch(1_000, 0, NaifFrame::J2000, &[25.0, 75.0])
+            .expect("both epochs are covered");
+        assert_eq!((batch[0][0], batch[1][0]), (1.0, 1.0));
+    }
+
+    #[test]
+    fn the_last_segment_covering_the_epoch_picks_the_centre() {
+        // Three segments written in this order. At ET 50 the last one
+        // covering the epoch is the 301 segment, so CSpice routes
+        // through 301 and answers 25. Merged per-pair windows answer
+        // 13 instead, because the last 399 segment sits later in the
+        // file.
+        let bodies = spk(&[
+            (1_000, 399, 0.0, 100.0, 3.0),
+            (1_000, 301, 0.0, 100.0, 5.0),
+            (1_000, 399, 200.0, 300.0, 7.0),
+        ]);
+        let centers = spk(&[(399, 0, 0.0, 300.0, 10.0), (301, 0, 0.0, 300.0, 20.0)]);
+        let mut pool = KernelPool::new();
+        pool.furnish(bodies.path()).unwrap();
+        pool.furnish(centers.path()).unwrap();
+        assert_eq!(pool.spk_state(1_000, 0, 50.0).unwrap()[0], 25.0);
+        // Past 100 only the third segment covers, so the centre is 399.
+        assert_eq!(pool.spk_state(1_000, 0, 250.0).unwrap()[0], 17.0);
+        // Coverage is still the union of the windows.
+        assert_eq!(pool.spk_coverage(1_000), vec![(0.0, 100.0), (200.0, 300.0)]);
+    }
+
+    #[test]
+    fn furnishing_a_loaded_path_again_promotes_it() {
+        // A, then B, then A. CSpice reloads A on top, so A wins.
+        let a = spk(&[(1_000, 0, 0.0, 100.0, 1.0)]);
+        let b = spk(&[(1_000, 0, 0.0, 100.0, 2.0)]);
+        let mut pool = KernelPool::new();
+        pool.furnish(a.path()).unwrap();
+        pool.furnish(b.path()).unwrap();
+        assert_eq!(pool.spk_state(1_000, 0, 50.0).unwrap()[0], 2.0);
+        pool.furnish(a.path()).unwrap();
+        assert_eq!(pool.loaded(), vec![b.path(), a.path()]);
+        assert_eq!(pool.spk_state(1_000, 0, 50.0).unwrap()[0], 1.0);
+        // The promotion moved the entry, it did not duplicate it.
+        assert!(pool.unload(a.path()));
+        assert_eq!(pool.loaded(), vec![b.path()]);
     }
 
     #[test]

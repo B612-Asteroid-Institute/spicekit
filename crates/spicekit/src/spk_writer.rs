@@ -585,17 +585,19 @@ mod tests {
     /// for the same `(target, center)` have overlapping ET coverage,
     /// queries in any order must return the same answer as a fresh
     /// (cache-cold) reader. Prior to the `cacheable` flag, querying
-    /// the second segment's exclusive range would cache it, then a
-    /// query in the overlap region would incorrectly return the
-    /// second segment's value instead of the first-loaded one that
-    /// `try_direct` deterministically picks.
+    /// one segment's exclusive range would cache it, then a query in
+    /// the overlap region would return that segment instead of the one
+    /// `try_direct` deterministically picks. The expected winner in
+    /// the overlap changed when `try_direct` moved to the last
+    /// matching segment in file order, which is what CSpice `spksfs`
+    /// picks. The cache rule under test is unchanged.
     #[test]
     fn overlapping_segments_do_not_corrupt_mru_cache() {
         // Segment A covers ET [0, 9], encodes x = 100 + t.
         // Segment B covers ET [5, 14], encodes x = 200 + t.
-        // Overlap region: ET [5, 9]. First-loaded (A) deterministically
-        // wins in `try_direct`, so any query in the overlap must
-        // return A's value (~ 100 + et) regardless of call history.
+        // Overlap region: ET [5, 9]. Last in file order (B) wins in
+        // `try_direct`, so any query in the overlap must return B's
+        // value (~ 200 + et) regardless of call history.
         fn linear_seg(target: i32, start: f64, end: f64, x_offset: f64) -> Type9Segment {
             let n = (end as usize) - (start as usize) + 1;
             let epochs: Vec<f64> = (0..n).map(|i| start + i as f64).collect();
@@ -626,39 +628,39 @@ mod tests {
         let spk = SpkFile::open(f.path()).unwrap();
         let cold = spk.state(42, 0, 7.0).unwrap();
         assert!(
-            (cold[0] - 107.0).abs() < 1e-12,
-            "cold overlap query returned {} (expected ~107 from segment A)",
+            (cold[0] - 207.0).abs() < 1e-12,
+            "cold overlap query returned {} (expected ~207 from segment B)",
             cold[0]
         );
 
-        // Query order 2: visit B's exclusive range first (would have
-        // populated MRU cache with B's index pre-fix), then overlap.
+        // Query order 2: visit A's exclusive range first (would have
+        // populated MRU cache with A's index pre-fix), then overlap.
         // Both queries must remain consistent with a cold reader.
         let spk = SpkFile::open(f.path()).unwrap();
-        let only_b = spk.state(42, 0, 12.0).unwrap();
+        let only_a = spk.state(42, 0, 2.0).unwrap();
         assert!(
-            (only_b[0] - 212.0).abs() < 1e-12,
-            "B-exclusive query returned {} (expected ~212)",
-            only_b[0]
+            (only_a[0] - 102.0).abs() < 1e-12,
+            "A-exclusive query returned {} (expected ~102)",
+            only_a[0]
         );
-        let after_b = spk.state(42, 0, 7.0).unwrap();
+        let after_a = spk.state(42, 0, 7.0).unwrap();
         assert!(
-            (after_b[0] - 107.0).abs() < 1e-12,
-            "overlap-after-B returned {} (expected ~107 from A; cache leaked B)",
-            after_b[0]
+            (after_a[0] - 207.0).abs() < 1e-12,
+            "overlap-after-A returned {} (expected ~207 from B; cache leaked A)",
+            after_a[0]
         );
 
-        // Query order 3: visit overlap, then B-exclusive, then
-        // overlap again. All overlap queries must return A.
+        // Query order 3: visit overlap, then A-exclusive, then
+        // overlap again. All overlap queries must return B.
         let spk = SpkFile::open(f.path()).unwrap();
         let r1 = spk.state(42, 0, 7.0).unwrap();
-        let r2 = spk.state(42, 0, 12.0).unwrap();
+        let r2 = spk.state(42, 0, 2.0).unwrap();
         let r3 = spk.state(42, 0, 7.0).unwrap();
-        assert!((r1[0] - 107.0).abs() < 1e-12);
-        assert!((r2[0] - 212.0).abs() < 1e-12);
-        assert!((r3[0] - 107.0).abs() < 1e-12);
+        assert!((r1[0] - 207.0).abs() < 1e-12);
+        assert!((r2[0] - 102.0).abs() < 1e-12);
+        assert!((r3[0] - 207.0).abs() < 1e-12);
         // And the two overlap queries must be bit-equal regardless of
-        // intervening B query.
+        // intervening A query.
         assert_eq!(r1[0].to_bits(), r3[0].to_bits());
     }
 

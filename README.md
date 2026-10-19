@@ -54,7 +54,9 @@ and frame evaluation:
   matching.
 - **Kernel pool**: `KernelPool` furnishes a set of SPK and binary PCK
   files with CSpice `furnsh` priority and resolves every epoch across
-  the whole set, so a batch that straddles two kernels works.
+  the whole set, so a batch that straddles two kernels works. Each SPK
+  lookup picks its segments the way CSpice `spksfs` does, newest file
+  first and last segment inside it.
 
 ## Non-goals
 
