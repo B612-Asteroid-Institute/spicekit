@@ -10,13 +10,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - `KernelPool`, a furnished set of SPK and binary PCK files with CSpice
-  `furnsh` priority, resolving each epoch across the whole set and
-  chaining SPK lookups the way `spkgeo` and `spksfs` do.
+  `furnsh` priority and per epoch resolution across the whole set.
 
 ### Changed
 
-- `SpkFile::state` now picks the last matching segment in file order
-  rather than the first, which is the segment CSpice `spksfs` picks.
+- `SpkFile::state` picks the last segment in file order, like `spksfs`.
 
 ## [0.2.2] — 2026-05-04
 

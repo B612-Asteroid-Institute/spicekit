@@ -53,8 +53,7 @@ and frame evaluation:
   CSpice's `zzidmap.c`, with case-insensitive whitespace-tolerant
   matching.
 - **Kernel pool**: `KernelPool` furnishes SPK and binary PCK files with
-  CSpice `furnsh` priority and resolves every epoch across the whole
-  set, the way CSpice `spkgeo` and `spksfs` do.
+  CSpice `furnsh` priority and resolves every epoch across the set.
 
 ## Non-goals
 

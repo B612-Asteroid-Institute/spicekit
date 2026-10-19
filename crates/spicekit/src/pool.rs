@@ -2,11 +2,11 @@
 //! and [`PckFile`] read one file. [`KernelPool`] owns a set of them.
 
 use std::cmp::Ordering;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+use crate::daf::{DafError, DafFile};
 use crate::frame::{
     j2000_to_eclipj2000, pck_euler_rotation_and_derivative, rotate_state, sxform_from_rotation,
     NaifFrame,
@@ -14,8 +14,7 @@ use crate::frame::{
 use crate::pck::{PckError, PckFile};
 use crate::spk::{SpkError, SpkFile};
 
-/// Longest body chain `spk_state` will walk. NAIF chains are shallow,
-/// so this only bounds a malformed kernel set.
+/// Longest body chain `spk_state` will walk, a bound on bad kernels.
 const MAX_CHAIN: usize = 32;
 
 #[derive(Debug, Error)]
@@ -28,58 +27,33 @@ pub enum PoolError {
         index: usize,
         et: f64,
     },
-    /// No loaded binary PCK covers the frame at this epoch.
     #[error("no loaded binary PCK covers frame {frame} at epoch index {index} (et {et} TDB)")]
     PckInsufficientData { frame: i32, index: usize, et: f64 },
-    /// The angles are stated against a reference frame this crate
-    /// cannot compose with the requested inertial frame.
     #[error("binary PCK frame {frame} is stated against unsupported reference frame {reference}")]
     UnsupportedPckReference { frame: i32, reference: i32 },
-    /// Text kernels are not part of the pool.
     #[error("{path} is not an SPK or a binary PCK")]
     UnsupportedKernel { path: PathBuf },
-    #[error("could not read {path}: {source}")]
-    Io {
-        path: PathBuf,
-        source: std::io::Error,
-    },
+    #[error(transparent)]
+    Daf(#[from] DafError),
     #[error(transparent)]
     Spk(#[from] SpkError),
     #[error(transparent)]
     Pck(#[from] PckError),
 }
 
-/// Merged epoch windows per key, read only by the coverage calls.
-type Coverage<K> = Vec<(K, Vec<(f64, f64)>)>;
-
-/// A furnished SPK and the merged windows of each body it targets.
-struct SpkEntry {
-    file: SpkFile,
-    targets: Coverage<i32>,
-}
-
-/// A furnished binary PCK and the body-fixed frames it covers.
-struct PckEntry {
-    file: PckFile,
-    frames: Coverage<i32>,
-}
-
 enum Kernel {
-    Spk(SpkEntry),
-    Pck(PckEntry),
+    Spk(SpkFile),
+    Pck(PckFile),
 }
 
 /// A set of furnished kernels resolved the way CSPICE resolves one.
 ///
-/// Priority is load order. A lookup takes the newest furnished file
-/// holding a segment that covers the body at the epoch, and the last
-/// such segment in file order, the way `spksfs` does. SPK lookups
-/// chain the way `spkgeo_c` does, walking target and centre toward the
-/// solar system barycentre and meeting at the first common node.
-/// Resolution is per epoch and never per batch, so a batch succeeds
-/// whenever the loaded set covers it, and an epoch nothing covers is a
-/// typed error naming that epoch. The merged windows exist only for
-/// the coverage queries.
+/// Priority is load order. A lookup takes the newest file holding a
+/// segment that covers the body at the epoch, and the last such segment
+/// in file order, the way `spksfs` does. SPK lookups chain like
+/// `spkgeo_c`, meeting target and centre at the first common node.
+/// Resolution is per epoch, so a batch succeeds whenever the set covers
+/// it, and an uncovered epoch is a typed error naming that epoch.
 #[derive(Default)]
 pub struct KernelPool {
     kernels: Vec<(PathBuf, Kernel)>,
@@ -91,34 +65,29 @@ impl KernelPool {
         Self::default()
     }
 
-    /// Load a kernel and give it the highest priority. The type comes
-    /// from the DAF id word, so SPK and binary PCK need no hint and
-    /// anything else is rejected. A path already in the pool is read
-    /// again and moves to the top, the way `furnsh_c` reloads it. The
-    /// read happens before the old copy is dropped, so a furnish that
-    /// fails leaves the pool as it was.
+    /// Load a kernel at the top of the priority order, rereading and
+    /// promoting a path already in the pool the way `furnsh_c` does.
     pub fn furnish<P: AsRef<Path>>(&mut self, path: P) -> Result<(), PoolError> {
         let path = path.as_ref();
-        let kernel = match daf_idword(path)? {
-            Some(word) if word.starts_with(b"DAF/SPK") => {
-                Kernel::Spk(SpkEntry::new(SpkFile::open(path)?))
-            }
-            Some(word) if word.starts_with(b"DAF/PCK") => {
-                Kernel::Pck(PckEntry::new(PckFile::open(path)?))
-            }
-            _ => {
-                return Err(PoolError::UnsupportedKernel {
-                    path: path.to_path_buf(),
-                })
-            }
+        let unsupported = || PoolError::UnsupportedKernel {
+            path: path.to_path_buf(),
+        };
+        let daf = DafFile::open(path).map_err(|e| match e {
+            DafError::Io(_) => PoolError::Daf(e),
+            _ => unsupported(),
+        })?;
+        let kernel = match daf.idword() {
+            word if word.starts_with(b"DAF/SPK") => Kernel::Spk(SpkFile::from_daf(daf)?),
+            word if word.starts_with(b"DAF/PCK") => Kernel::Pck(PckFile::from_daf(daf)?),
+            _ => return Err(unsupported()),
         };
         self.kernels.retain(|(loaded, _)| loaded != path);
         self.kernels.push((path.to_path_buf(), kernel));
         Ok(())
     }
 
-    /// Remove a kernel. True when the path was loaded. Everything else
-    /// keeps its relative priority.
+    /// Remove a kernel, true when the path was loaded, leaving every
+    /// other kernel at its relative priority.
     pub fn unload<P: AsRef<Path>>(&mut self, path: P) -> bool {
         let path = path.as_ref();
         let before = self.kernels.len();
@@ -143,7 +112,7 @@ impl KernelPool {
     }
 
     /// States for a batch of epochs, in input order, rotated into
-    /// `frame`. The error names the first epoch nothing covers.
+    /// `frame`.
     pub fn spk_state_batch(
         &self,
         target: i32,
@@ -163,18 +132,17 @@ impl KernelPool {
     /// Merged coverage of `body` as an SPK target, like `spkcov_c`
     /// taken over every loaded file.
     pub fn spk_coverage(&self, body: i32) -> Vec<(f64, f64)> {
-        let mut raw = Vec::new();
-        for entry in self.spks() {
-            for (_, windows) in entry.targets.iter().filter(|(t, _)| *t == body) {
-                raw.extend(windows.iter().copied());
-            }
-        }
-        merge(raw)
+        merge(
+            self.spks()
+                .flat_map(|file| file.segments())
+                .filter(|s| s.target == body)
+                .map(|s| (s.start_et, s.end_et))
+                .collect(),
+        )
     }
 
     /// Transformation from `inertial` to the body-fixed frame
-    /// `body_frame` at `et`, in CSPICE `sxform_c` block layout. For the
-    /// other direction use [`crate::frame::invert_sxform`].
+    /// `body_frame` at `et`, in CSPICE `sxform_c` block layout.
     pub fn pck_sxform(
         &self,
         body_frame: i32,
@@ -196,8 +164,7 @@ impl KernelPool {
         Ok(rotation_block(&self.pck_sxform(body_frame, inertial, et)?))
     }
 
-    /// Transformations for a batch of epochs, in input order. The error
-    /// names the first epoch nothing covers.
+    /// Transformations for a batch of epochs, in input order.
     pub fn pck_sxform_batch(
         &self,
         body_frame: i32,
@@ -220,34 +187,35 @@ impl KernelPool {
         inertial: NaifFrame,
         ets: &[f64],
     ) -> Result<Vec<[[f64; 3]; 3]>, PoolError> {
-        let sxforms = self.pck_sxform_batch(body_frame, inertial, ets)?;
-        Ok(sxforms.iter().map(rotation_block).collect())
+        Ok((self.pck_sxform_batch(body_frame, inertial, ets)?.iter())
+            .map(rotation_block)
+            .collect())
     }
 
     /// Merged coverage of `body_frame`, like `pckcov_c` taken over
     /// every loaded file.
     pub fn pck_coverage(&self, body_frame: i32) -> Vec<(f64, f64)> {
-        let mut raw = Vec::new();
-        for entry in self.pcks() {
-            for (_, windows) in entry.frames.iter().filter(|(f, _)| *f == body_frame) {
-                raw.extend(windows.iter().copied());
-            }
-        }
-        merge(raw)
+        merge(
+            self.pcks()
+                .flat_map(|file| file.segments())
+                .filter(|s| s.body_frame == body_frame)
+                .map(|s| (s.start_et, s.end_et))
+                .collect(),
+        )
     }
 
     /// Loaded SPKs, highest priority first.
-    fn spks(&self) -> impl Iterator<Item = &SpkEntry> {
+    fn spks(&self) -> impl Iterator<Item = &SpkFile> {
         self.kernels.iter().rev().filter_map(|(_, k)| match k {
-            Kernel::Spk(entry) => Some(entry),
+            Kernel::Spk(file) => Some(file),
             Kernel::Pck(_) => None,
         })
     }
 
     /// Loaded binary PCKs, highest priority first.
-    fn pcks(&self) -> impl Iterator<Item = &PckEntry> {
+    fn pcks(&self) -> impl Iterator<Item = &PckFile> {
         self.kernels.iter().rev().filter_map(|(_, k)| match k {
-            Kernel::Pck(entry) => Some(entry),
+            Kernel::Pck(file) => Some(file),
             Kernel::Spk(_) => None,
         })
     }
@@ -271,11 +239,7 @@ impl KernelPool {
             })
     }
 
-    /// Walk both bodies toward the barycentre and meet at the first
-    /// common node, the way `spkgeo_c` does. A direct pair is not a
-    /// special case. It is the walk reaching `center` on its first
-    /// step, which only happens when the winning segment for `target`
-    /// has that centre.
+    /// Meet the walks from both bodies at the first common node.
     fn chain(&self, target: i32, center: i32, et: f64) -> Result<Option<[f64; 6]>, PoolError> {
         let (up, up_states) = self.walk(target, &[center], et)?;
         let (down, down_states) = self.walk(center, &up, et)?;
@@ -299,10 +263,7 @@ impl KernelPool {
         Ok(None)
     }
 
-    /// Nodes visited walking from `body` toward the barycentre, and the
-    /// state of each node relative to the next. The walk stops at the
-    /// barycentre, at any node in `stop`, at a repeated node, or where
-    /// no loaded SPK covers the current node.
+    /// Nodes from `body` toward the barycentre, with pairwise states.
     fn walk(
         &self,
         body: i32,
@@ -316,93 +277,47 @@ impl KernelPool {
             if current == 0 || stop.contains(&current) {
                 break;
             }
-            let Some((entry, next)) = self.step(current, et) else {
+            let Some((file, next)) = self.step(current, et) else {
                 break;
             };
             if nodes.contains(&next) {
                 break;
             }
-            states.push(entry.file.state(current, next, et)?);
+            states.push(file.state(current, next, et)?);
             nodes.push(next);
         }
         Ok((nodes, states))
     }
 
-    /// The file and centre a chain advances to from `body` at `et`,
-    /// chosen the way `spksfs` chooses. The newest file holding any
-    /// segment for `body` at `et` decides, whatever centres the older
-    /// files offer.
-    fn step(&self, body: i32, et: f64) -> Option<(&SpkEntry, i32)> {
-        (self.spks()).find_map(|entry| entry.center_for(body, et).map(|next| (entry, next)))
+    /// The file and centre a chain advances to, the way `spksfs` picks.
+    fn step(&self, body: i32, et: f64) -> Option<(&SpkFile, i32)> {
+        (self.spks()).find_map(|file| center_for(file, body, et).map(|next| (file, next)))
     }
 
-    /// Euler angles and rates for `body_frame`, with the reference
-    /// frame id they are stated against.
+    /// Euler angles and rates for `body_frame`, with their reference id.
     fn euler(&self, body_frame: i32, et: f64, index: usize) -> Result<(i32, [f64; 6]), PoolError> {
-        let entry = self
+        let file = self
             .pcks()
-            .find(|entry| {
-                (entry.frames.iter()).any(|(f, windows)| *f == body_frame && covers(windows, et))
+            .find(|file| {
+                (file.segments().iter().rev())
+                    .any(|s| s.body_frame == body_frame && s.start_et <= et && et <= s.end_et)
             })
             .ok_or(PoolError::PckInsufficientData {
                 frame: body_frame,
                 index,
                 et,
             })?;
-        Ok(entry.file.euler_state_with_ref(body_frame, et)?)
+        Ok(file.euler_state_with_ref(body_frame, et)?)
     }
 }
 
-impl SpkEntry {
-    fn new(file: SpkFile) -> Self {
-        let rows = (file.segments().iter()).map(|s| (s.target, (s.start_et, s.end_et)));
-        let targets = group(rows);
-        Self { file, targets }
-    }
-
-    /// The centre of the segment `spksfs` would pick for `body` at
-    /// `et`, which is the last segment in file order whose target is
-    /// `body` and whose window holds `et`. Asked for that pair the
-    /// reader lands on the same segment, so the chain reads the state
-    /// through [`SpkFile::state`].
-    fn center_for(&self, body: i32, et: f64) -> Option<i32> {
-        (self.file.segments().iter().rev())
-            .find(|s| s.target == body && s.start_et <= et && et <= s.end_et)
-            .map(|s| s.center)
-    }
-}
-
-impl PckEntry {
-    fn new(file: PckFile) -> Self {
-        let rows = (file.segments().iter()).map(|s| (s.body_frame, (s.start_et, s.end_et)));
-        let frames = group(rows);
-        Self { file, frames }
-    }
-}
-
-/// Collect one file's segment windows into merged windows per key, for
-/// the coverage calls. Order does not matter here, since a coverage
-/// answer is a union.
-fn group<K: Copy + PartialEq>(rows: impl Iterator<Item = (K, (f64, f64))>) -> Coverage<K> {
-    let mut out: Coverage<K> = Vec::new();
-    for (key, window) in rows {
-        match out.iter_mut().find(|(k, _)| *k == key) {
-            Some((_, windows)) => windows.push(window),
-            None => out.push((key, vec![window])),
-        }
-    }
-    out.into_iter().map(|(k, w)| (k, merge(w))).collect()
-}
-
-/// True when `et` lands in one of `windows`, which are sorted by start
-/// and disjoint. One binary search per file picks the PCK, and a pool
-/// holds a handful of files.
-fn covers(windows: &[(f64, f64)], et: f64) -> bool {
-    match windows.binary_search_by(|w| w.0.partial_cmp(&et).unwrap_or(Ordering::Equal)) {
-        Ok(_) => true,
-        Err(0) => false,
-        Err(next) => windows[next - 1].1 >= et,
-    }
+/// The centre `spksfs` picks, from the last covering segment in file
+/// order. The reader lands on that same segment, so the chain reads the
+/// state through [`SpkFile::state`].
+fn center_for(file: &SpkFile, body: i32, et: f64) -> Option<i32> {
+    (file.segments().iter().rev())
+        .find(|s| s.target == body && s.start_et <= et && et <= s.end_et)
+        .map(|s| s.center)
 }
 
 /// Sort and merge raw segment windows into disjoint intervals.
@@ -440,64 +355,34 @@ fn sxform(
     ))
 }
 
-/// Static rotation from an inertial frame to a PCK segment's reference
-/// frame. Reference ids are 1 for J2000 and 17 for ECLIPJ2000.
+/// Reference ids are 1 for J2000 and 17 for ECLIPJ2000.
 fn inertial_to_reference(inertial: NaifFrame, reference: i32) -> Option<[[f64; 3]; 3]> {
     const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let ecliptic = j2000_to_eclipj2000();
     match (inertial, reference) {
         (NaifFrame::J2000, 1) | (NaifFrame::EclipJ2000, 17) => Some(IDENTITY),
-        (NaifFrame::J2000, 17) => Some(ecliptic),
+        (NaifFrame::J2000, 17) => Some(j2000_to_eclipj2000()),
         (NaifFrame::EclipJ2000, 1) => {
-            let mut t = [[0.0f64; 3]; 3];
-            for (i, row) in t.iter_mut().enumerate() {
-                for (j, slot) in row.iter_mut().enumerate() {
-                    *slot = ecliptic[j][i];
-                }
-            }
-            Some(t)
+            let ecliptic = j2000_to_eclipj2000();
+            Some(std::array::from_fn(|i| {
+                std::array::from_fn(|j| ecliptic[j][i])
+            }))
         }
         _ => None,
     }
 }
 
 fn matmul3(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    let mut c = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            c[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-        }
-    }
-    c
+    std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
 }
 
 fn rotation_block(m: &[[f64; 6]; 6]) -> [[f64; 3]; 3] {
-    let mut r = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        r[i][..3].copy_from_slice(&m[i][..3]);
-    }
-    r
-}
-
-/// Read the DAF id word, or None when the file is not a DAF.
-fn daf_idword(path: &Path) -> Result<Option<[u8; 8]>, PoolError> {
-    let io = |source| PoolError::Io {
-        path: path.to_path_buf(),
-        source,
-    };
-    let mut file = std::fs::File::open(path).map_err(io)?;
-    let mut buf = [0u8; 8];
-    if file.read(&mut buf).map_err(io)? < 8 || !buf.starts_with(b"DAF/") {
-        return Ok(None);
-    }
-    Ok(Some(buf))
+    std::array::from_fn(|i| std::array::from_fn(|j| m[i][j]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::spk_writer::{SpkWriter, Type3Record, Type3Segment};
-    use std::io::Write;
     use tempfile::NamedTempFile;
 
     /// An SPK of constant-state segments, one per
@@ -535,8 +420,9 @@ mod tests {
         file
     }
 
-    /// Pins `furnsh` priority, where load order decides and furnishing
-    /// a loaded path again puts it back on top.
+    /// Pins `furnsh` priority, where load order decides, furnishing a
+    /// loaded path again puts it back on top, and only SPK and binary
+    /// PCK belong in the pool.
     #[test]
     fn later_furnish_wins_and_refurnishing_promotes() {
         let a = spk(&[(1_000, 0, 0.0, 100.0, 1.0)]);
@@ -552,6 +438,21 @@ mod tests {
         pool.furnish(a.path()).unwrap();
         assert_eq!(pool.loaded(), vec![b.path(), a.path()]);
         assert_eq!(pool.spk_state(1_000, 0, 75.0).unwrap()[0], 1.0);
+
+        // A text kernel is rejected instead of silently ignored.
+        let text = NamedTempFile::new().unwrap();
+        std::fs::write(
+            text.path(),
+            "KPL/FK\n\\begindata\nNAIF_BODY_CODE += ( 7777 )\n",
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                pool.furnish(text.path()),
+                Err(PoolError::UnsupportedKernel { .. })
+            ),
+            "a text kernel is not pool content"
+        );
 
         // The promotion moved the entry, it did not duplicate it, and
         // unloading the winner hands the epoch back to the other file.
@@ -645,18 +546,5 @@ mod tests {
         assert_eq!(pool.spk_state(1_000, 0, 250.0).unwrap()[0], 17.0);
         // Coverage is still the union of the windows.
         assert_eq!(pool.spk_coverage(1_000), vec![(0.0, 100.0), (200.0, 300.0)]);
-    }
-
-    /// Pins the pool contents, which are SPK and binary PCK only, so a
-    /// text kernel is rejected instead of silently ignored.
-    #[test]
-    fn a_text_kernel_is_rejected() {
-        let mut text = NamedTempFile::new().unwrap();
-        writeln!(text, "KPL/FK\n\\begindata\nNAIF_BODY_CODE += ( 7777 )").unwrap();
-        text.flush().unwrap();
-        let mut pool = KernelPool::new();
-        let err = pool.furnish(text.path()).unwrap_err();
-        assert!(matches!(err, PoolError::UnsupportedKernel { .. }), "{err}");
-        assert!(pool.loaded().is_empty());
     }
 }
