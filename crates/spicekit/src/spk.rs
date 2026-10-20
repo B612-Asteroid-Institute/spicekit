@@ -674,8 +674,8 @@ pub(crate) fn cheby3_val_only(cx: &[f64], cy: &[f64], cz: &[f64], s: f64) -> [f6
 /// `(target, center)` group has multiple segments whose ET coverage
 /// ranges overlap, the cached choice would depend on call history
 /// (whichever overlapping segment was most recently visited would
-/// "win" instead of the consistent insertion-order winner from
-/// `try_direct`). To prevent that, an internal per-segment
+/// "win" instead of the last segment in file order, which is what
+/// `try_direct` returns). To prevent that, an internal per-segment
 /// `cacheable` flag is set only for segments whose ET range does
 /// **not** overlap any sibling in the same `(target, center)` group;
 /// only those segments are ever stored in `last_segment`, and the
@@ -843,14 +843,17 @@ impl SpkFile {
 
     /// Try to satisfy the pair from a single segment (or a single
     /// reverse segment by negation). Returns `Ok(None)` when neither
-    /// direction has coverage at `et`. Updates the MRU cache on a
-    /// forward-direction hit (reverse hits require state negation, so
-    /// they're not cached — the cache always points at a segment whose
-    /// `target`/`center` match the query exactly).
+    /// direction has coverage at `et`. Segments are searched last to
+    /// first in file order, so when two segments for one pair both
+    /// cover `et` the later one wins, which is the choice `spksfs`
+    /// makes. Updates the MRU cache on a forward-direction hit
+    /// (reverse hits require state negation, so they're not cached,
+    /// the cache always points at a segment whose `target`/`center`
+    /// match the query exactly).
     #[inline]
     fn try_direct(&self, target: i32, center: i32, et: f64) -> Result<Option<[f64; 6]>, SpkError> {
         if let Some(indices) = self.index.get(&(target, center)) {
-            for &i in indices {
+            for &i in indices.iter().rev() {
                 let seg = &self.segments[i];
                 if et >= seg.start_et && et <= seg.end_et {
                     if self.cacheable[i] {
@@ -861,7 +864,7 @@ impl SpkFile {
             }
         }
         if let Some(indices) = self.index.get(&(center, target)) {
-            for &i in indices {
+            for &i in indices.iter().rev() {
                 let seg = &self.segments[i];
                 if et >= seg.start_et && et <= seg.end_et {
                     let mut s = Self::eval_segment(seg, et)?;
@@ -1471,6 +1474,25 @@ mod synthetic_spk_tests {
         assert!((s_early[0] - 1.0).abs() < 1e-14);
         let s_late = spk.state(5, 0, 50.0).expect("late");
         assert!((s_late[0] - 2.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn last_segment_in_file_order_wins_when_coverage_overlaps() {
+        // Two segments for the same pair, overlapping on [50, 100].
+        // CSpice N0067 reads 2.0 at ET 75, the later segment, so the
+        // lookup scans file order backwards.
+        let first = one_record_type2(5, 0, 0.0, 100.0, &[1.0, 0.0], &[0.0, 0.0], &[0.0, 0.0]);
+        let second = one_record_type2(5, 0, 50.0, 150.0, &[2.0, 0.0], &[0.0, 0.0], &[0.0, 0.0]);
+        let tmp = build_spk(&[first, second]);
+        let spk = SpkFile::open(tmp.path()).expect("open");
+        assert!((spk.state(5, 0, 75.0).expect("overlap")[0] - 2.0).abs() < 1e-14);
+        // Outside the overlap each segment answers for itself.
+        assert!((spk.state(5, 0, 25.0).expect("first only")[0] - 1.0).abs() < 1e-14);
+        assert!((spk.state(5, 0, 125.0).expect("second only")[0] - 2.0).abs() < 1e-14);
+        // The overlap answer does not drift with call history.
+        assert!((spk.state(5, 0, 75.0).expect("overlap again")[0] - 2.0).abs() < 1e-14);
+        // The reverse direction negates the same segment.
+        assert!((spk.state(0, 5, 75.0).expect("reverse")[0] + 2.0).abs() < 1e-14);
     }
 
     #[test]

@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `KernelPool`, a furnished set of SPK and binary PCK files with CSpice
+  `furnsh` priority and per epoch resolution across the whole set.
+
+### Changed
+
+- `SpkFile::state` picks the last segment in file order, like `spksfs`.
+
 ## [0.2.2] — 2026-05-04
 
 ### Added

@@ -22,13 +22,9 @@
 //! [`crate::frame::pck_euler_rotation_and_derivative`].
 //!
 //! Kernel precedence: three PCKs (`predict`, `historical`, `high_prec`)
-//! may cover overlapping epoch ranges. Last-loaded-wins matches
-//! CSPICE `furnsh` semantics: the caller is expected to load kernels
-//! in precedence order (least- to most-precise) and the file they
-//! opened most recently "wins" for overlapping coverage. This crate
-//! offers a per-file reader; multi-file composition (a list-of-
-//! readers dispatcher) is the caller's responsibility — see the
-//! `spicekit-py` Python bindings for one such implementation.
+//! may cover overlapping epoch ranges, and no one of them covers every
+//! epoch. This type reads one file. For a furnished set, with CSPICE
+//! last-loaded-wins priority, use [`crate::pool::KernelPool`].
 
 use std::path::Path;
 

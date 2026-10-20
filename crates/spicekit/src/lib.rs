@@ -7,6 +7,8 @@
 //! FFI. The DAF parser ([`daf`]) is the shared container reader; the
 //! per-kernel-type parsers ([`spk`], [`pck`], [`text_kernel`]) build
 //! on top of it. [`spk_writer`] emits SPK Type 3 and Type 9 segments.
+//! [`pool`] furnishes a set of those files and resolves each epoch
+//! across the set the way CSPICE does.
 //!
 //! This crate does not link CSPICE. Bit-for-bit parity against CSPICE
 //! is asserted in the sibling `spicekit-bench` crate, which links
@@ -18,6 +20,7 @@ pub mod daf;
 pub mod frame;
 pub mod naif_ids;
 pub mod pck;
+pub mod pool;
 pub mod spk;
 pub mod spk_writer;
 pub mod text_kernel;
@@ -26,6 +29,7 @@ pub use daf::{DafError, DafFile, Summary};
 pub use frame::{rotate_state, NaifFrame, OBLIQUITY_J2000_RAD};
 pub use naif_ids::{bodc2n, bodn2c, NaifIdError};
 pub use pck::{PckError, PckFile, PckSegment};
+pub use pool::{KernelPool, PoolError};
 pub use spk::{SpkError, SpkFile, SpkSegment};
 pub use spk_writer::{SpkWriter, SpkWriterError, Type3Record, Type3Segment, Type9Segment};
 pub use text_kernel::{
