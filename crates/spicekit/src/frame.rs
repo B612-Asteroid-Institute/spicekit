@@ -89,19 +89,52 @@ pub fn pck_euler_rotation_and_derivative(
     dt2: f64,
     dt3: f64,
 ) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
-    let (rz_t1, drz_t1) = rotz_and_deriv(t1, dt1);
-    let (rx_t2, drx_t2) = rotx_and_deriv(t2, dt2);
-    let (rz_t3, drz_t3) = rotz_and_deriv(t3, dt3);
+    // Match CSPICE EUL2XF for the 3-1-3 sequence used by Type 2 PCKs.
+    // EUL2XF first constructs R through EUL2M, then derives the
+    // skew-symmetric matrix dR/dt * R^T from the Euler rates and computes
+    // dR/dt with one MXM operation. Besides avoiding redundant derivative
+    // products, preserving this arithmetic order keeps terrestrial state
+    // transforms at CSPICE's floating-point result.
+    let r = euler313_rotation(t1, t2, t3);
+    let (sin_t3, cos_t3) = t3.sin_cos();
+    let (sin_t2, cos_t2) = t2.sin_cos();
 
-    // R = Rz(t3) · (Rx(t2) · Rz(t1))
-    let a = matmul3(&rx_t2, &rz_t1);
-    let r = matmul3(&rz_t3, &a);
-
-    // dR/dt = dRz(t3) · A + Rz(t3) · dA
-    // dA    = dRx(t2) · Rz(t1) + Rx(t2) · dRz(t1)
-    let da = add3(&matmul3(&drx_t2, &rz_t1), &matmul3(&rx_t2, &drz_t1));
-    let dr = add3(&matmul3(&drz_t3, &a), &matmul3(&rz_t3, &da));
+    let omega1 = -dt3 - cos_t2 * dt1;
+    let omega2 = -cos_t3 * dt2 - sin_t3 * sin_t2 * dt1;
+    let omega3 = sin_t3 * dt2 - cos_t3 * sin_t2 * dt1;
+    let dr_dt_rt = [
+        [0.0, -omega1, omega3],
+        [omega1, 0.0, -omega2],
+        [-omega3, omega2, 0.0],
+    ];
+    let dr = matmul3(&dr_dt_rt, &r);
     (r, dr)
+}
+
+/// Construct a 3-1-3 rotation using CSPICE EUL2M's ROTATE/ROTMAT order.
+fn euler313_rotation(t1: f64, t2: f64, t3: f64) -> [[f64; 3]; 3] {
+    let (sin_t1, cos_t1) = t1.sin_cos();
+    let mut r = [
+        [cos_t1, sin_t1, 0.0],
+        [-sin_t1, cos_t1, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    rotate_matrix(&mut r, t2, 1);
+    rotate_matrix(&mut r, t3, 3);
+    r
+}
+
+fn rotate_matrix(matrix: &mut [[f64; 3]; 3], angle: f64, axis: usize) {
+    let (sin_angle, cos_angle) = angle.sin_cos();
+    let i1 = axis - 1;
+    let i2 = axis % 3;
+    let i3 = (axis + 1) % 3;
+    let previous = *matrix;
+    for column in 0..3 {
+        matrix[i1][column] = previous[i1][column];
+        matrix[i2][column] = cos_angle * previous[i2][column] + sin_angle * previous[i3][column];
+        matrix[i3][column] = -sin_angle * previous[i2][column] + cos_angle * previous[i3][column];
+    }
 }
 
 /// Assemble a 6×6 state-transform matrix for an inertial → body-fixed
@@ -163,28 +196,6 @@ pub fn invert_sxform(m: &[[f64; 6]; 6]) -> [[f64; 6]; 6] {
     inv
 }
 
-fn rotz_and_deriv(angle: f64, rate: f64) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
-    let (s, c) = angle.sin_cos();
-    let r = [[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]];
-    let dr = [
-        [-s * rate, c * rate, 0.0],
-        [-c * rate, -s * rate, 0.0],
-        [0.0, 0.0, 0.0],
-    ];
-    (r, dr)
-}
-
-fn rotx_and_deriv(angle: f64, rate: f64) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
-    let (s, c) = angle.sin_cos();
-    let r = [[1.0, 0.0, 0.0], [0.0, c, s], [0.0, -s, c]];
-    let dr = [
-        [0.0, 0.0, 0.0],
-        [0.0, -s * rate, c * rate],
-        [0.0, -c * rate, -s * rate],
-    ];
-    (r, dr)
-}
-
 fn matmul3(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut c = [[0.0f64; 3]; 3];
     for i in 0..3 {
@@ -194,16 +205,6 @@ fn matmul3(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
                 acc += a[i][k] * b_row[j];
             }
             c[i][j] = acc;
-        }
-    }
-    c
-}
-
-fn add3(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    let mut c = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            c[i][j] = a[i][j] + b[i][j];
         }
     }
     c
